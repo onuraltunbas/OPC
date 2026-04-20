@@ -1,0 +1,375 @@
+# -*- coding: utf-8 -*-
+import sys
+import os
+import subprocess
+import threading
+import asyncio
+import copyreg
+import datetime
+import urllib.request
+import tempfile
+import multiprocessing
+import ssl
+
+# EXE'nin kendi kendini klonlamasını engeller
+if __name__ == '__main__':
+    multiprocessing.freeze_support()
+
+# Kütüphanelerin anında (kapat-aç yapmadan) görülmesini sağlar
+hedef_kutuphane = r"C:\Python313_32\Lib\site-packages"
+if os.path.exists(hedef_kutuphane) and hedef_kutuphane not in sys.path:
+    sys.path.insert(0, hedef_kutuphane)
+
+from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtCore import QThread, pyqtSignal, QObject
+from PyQt5.QtGui import QTextCursor
+
+# =====================================================================
+# 1. BÖLÜM: ARAYÜZ TASARIMI
+# =====================================================================
+class Ui_btn_sunucu_tara(object):
+    def setupUi(self, btn_sunucu_tara):
+        btn_sunucu_tara.setObjectName("btn_sunucu_tara")
+        btn_sunucu_tara.resize(800, 600)
+        self.centralwidget = QtWidgets.QWidget(btn_sunucu_tara)
+        self.centralwidget.setObjectName("centralwidget")
+        self.pushButton = QtWidgets.QPushButton(self.centralwidget)
+        self.pushButton.setGeometry(QtCore.QRect(250, 200, 110, 25))
+        self.pushButton.setObjectName("pushButton")
+        self.cb_sunucu = QtWidgets.QComboBox(self.centralwidget)
+        self.cb_sunucu.setGeometry(QtCore.QRect(250, 230, 140, 31)) 
+        self.cb_sunucu.setObjectName("cb_sunucu")
+        self.label = QtWidgets.QLabel(self.centralwidget)
+        self.label.setGeometry(QtCore.QRect(270, 180, 47, 13))
+        self.label.setObjectName("label")
+        self.label_2 = QtWidgets.QLabel(self.centralwidget)
+        self.label_2.setGeometry(QtCore.QRect(440, 170, 80, 21))
+        self.label_2.setObjectName("label_2")
+        self.btn_etiket_tara = QtWidgets.QPushButton(self.centralwidget)
+        self.btn_etiket_tara.setGeometry(QtCore.QRect(430, 190, 90, 25))
+        self.btn_etiket_tara.setObjectName("btn_etiket_tara")
+        self.list_etiket = QtWidgets.QListWidget(self.centralwidget)
+        self.list_etiket.setGeometry(QtCore.QRect(400, 220, 180, 100))
+        self.list_etiket.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.list_etiket.setObjectName("list_etiket")
+        self.txt_ip = QtWidgets.QLineEdit(self.centralwidget)
+        self.txt_ip.setGeometry(QtCore.QRect(630, 200, 113, 25))
+        self.txt_ip.setObjectName("txt_ip")
+        self.btn_baslat = QtWidgets.QPushButton(self.centralwidget)
+        self.btn_baslat.setGeometry(QtCore.QRect(640, 230, 75, 25))
+        self.btn_baslat.setObjectName("btn_baslat")
+        self.btn_durdur = QtWidgets.QPushButton(self.centralwidget)
+        self.btn_durdur.setGeometry(QtCore.QRect(640, 260, 75, 25))
+        self.btn_durdur.setObjectName("btn_durdur")
+        self.txt_konsol = QtWidgets.QTextEdit(self.centralwidget)
+        self.txt_konsol.setGeometry(QtCore.QRect(30, 340, 740, 201)) 
+        self.txt_konsol.setObjectName("txt_konsol")
+        self.label_3 = QtWidgets.QLabel(self.centralwidget)
+        self.label_3.setGeometry(QtCore.QRect(650, 180, 80, 16))
+        self.label_3.setObjectName("label_3")
+        self.label_4 = QtWidgets.QLabel(self.centralwidget)
+        self.label_4.setGeometry(QtCore.QRect(40, 320, 100, 16))
+        self.label_4.setObjectName("label_4")
+        self.label_5 = QtWidgets.QLabel(self.centralwidget)
+        self.label_5.setGeometry(QtCore.QRect(10, 20, 47, 13))
+        self.label_5.setObjectName("label_5")
+        self.btn_kurulum_ac = QtWidgets.QPushButton(self.centralwidget)
+        self.btn_kurulum_ac.setGeometry(QtCore.QRect(20, 40, 160, 31))
+        self.btn_kurulum_ac.setObjectName("btn_kurulum_ac")
+        btn_sunucu_tara.setCentralWidget(self.centralwidget)
+        self.retranslateUi(btn_sunucu_tara)
+        QtCore.QMetaObject.connectSlotsByName(btn_sunucu_tara)
+
+    def retranslateUi(self, btn_sunucu_tara):
+        _translate = QtCore.QCoreApplication.translate
+        btn_sunucu_tara.setWindowTitle(_translate("btn_sunucu_tara", "OPC Gateway - Test Sürümü"))
+        self.pushButton.setText(_translate("btn_sunucu_tara", "Sunucuları Tara"))
+        self.label.setText(_translate("btn_sunucu_tara", "ProgID"))
+        self.label_2.setText(_translate("btn_sunucu_tara", "Etiket Seçimi"))
+        self.btn_etiket_tara.setText(_translate("btn_sunucu_tara", "Etiketleri Tara"))
+        self.txt_ip.setText(_translate("btn_sunucu_tara", "0.0.0.0"))
+        self.btn_baslat.setText(_translate("btn_sunucu_tara", "Başlat"))
+        self.btn_durdur.setText(_translate("btn_sunucu_tara", "Durdur"))
+        self.label_3.setText(_translate("btn_sunucu_tara", "Başlatma Ve IP"))
+        self.label_4.setText(_translate("btn_sunucu_tara", "Canlı Veri Ekranı"))
+        self.label_5.setText(_translate("btn_sunucu_tara", "Kurulum"))
+        self.btn_kurulum_ac.setText(_translate("btn_sunucu_tara", "Sistem Kurulum Merkezi"))
+
+# =====================================================================
+# 2. BÖLÜM: TAM OTOMATİK KURULUM PENCERESİ
+# =====================================================================
+class KurulumPenceresi(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Sistem Kurulum Merkezi")
+        self.resize(450, 450)
+        self.setModal(True)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.lbl_mimari = QtWidgets.QLabel()
+        self.lbl_mimari.setAlignment(QtCore.Qt.AlignCenter)
+        if sys.maxsize > 2**32:
+            self.lbl_mimari.setText("⚠️ UYARI: Python 64-Bit! (32-Bit Tavsiye Edilir)")
+            self.lbl_mimari.setStyleSheet("color: red; font-weight: bold;")
+        else:
+            self.lbl_mimari.setText("✅ Sistem Uygun: Python 32-Bit")
+            self.lbl_mimari.setStyleSheet("color: green; font-weight: bold;")
+        layout.addWidget(self.lbl_mimari)
+
+        h0 = QtWidgets.QHBoxLayout()
+        self.btn_python = QtWidgets.QPushButton("0. Python 3.13 İndir ve Sessizce Kur")
+        self.btn_python.setStyleSheet("background-color: #3776ab; color: white; font-weight: bold;")
+        self.btn_python.clicked.connect(self.python_indir_ve_kur)
+        self.lbl_durum0 = QtWidgets.QLabel("❌ Yapılmadı"); self.lbl_durum0.setStyleSheet("color: gray;")
+        h0.addWidget(self.btn_python); h0.addWidget(self.lbl_durum0)
+        layout.addLayout(h0)
+
+        h1 = QtWidgets.QHBoxLayout()
+        self.btn_kutuphane = QtWidgets.QPushButton("1. Kütüphaneleri Kur (PIP)")
+        self.btn_kutuphane.clicked.connect(self.kutuphaneleri_kur)
+        self.lbl_durum1 = QtWidgets.QLabel("❌ Yapılmadı"); self.lbl_durum1.setStyleSheet("color: gray;")
+        h1.addWidget(self.btn_kutuphane); h1.addWidget(self.lbl_durum1)
+        layout.addLayout(h1)
+
+        h2 = QtWidgets.QHBoxLayout()
+        self.btn_dll = QtWidgets.QPushButton("2. Windows DLL'lerini Onar")
+        self.btn_dll.clicked.connect(self.dll_kaydet)
+        self.lbl_durum2 = QtWidgets.QLabel("❌ Yapılmadı"); self.lbl_durum2.setStyleSheet("color: gray;")
+        h2.addWidget(self.btn_dll); h2.addWidget(self.lbl_durum2)
+        layout.addLayout(h2)
+
+        self.kurulum_log = QtWidgets.QTextEdit()
+        self.kurulum_log.setReadOnly(True)
+        self.kurulum_log.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4;")
+        layout.addWidget(self.kurulum_log)
+
+    def log_yaz(self, metin):
+        self.kurulum_log.append(metin)
+        self.kurulum_log.moveCursor(QtGui.QTextCursor.End)
+
+    def python_indir_ve_kur(self):
+        url = "https://www.python.org/ftp/python/3.13.13/python-3.13.13.exe"
+        path = os.path.join(tempfile.gettempdir(), "py_setup.exe")
+        def download():
+            self.btn_python.setEnabled(False)
+            self.lbl_durum0.setText("⏳ İndiriliyor...")
+            self.lbl_durum0.setStyleSheet("color: orange;")
+            self.log_yaz("📥 Python 3.13 indiriliyor... (SSL Bypass Aktif)")
+            try:
+                ssl._create_default_https_context = ssl._create_unverified_context
+                urllib.request.urlretrieve(url, path)
+                self.log_yaz("✅ İndirme bitti! Arka planda SESSİZ kurulum başlatılıyor...")
+                
+                sessiz_komut = f'"{path}" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 TargetDir="C:\\Python313_32"'
+                p = subprocess.Popen(sessiz_komut, shell=True)
+                p.wait()
+                
+                self.lbl_durum0.setText("✅ Tamamlandı")
+                self.lbl_durum0.setStyleSheet("color: green; font-weight: bold;")
+                self.log_yaz("✅ MÜKEMMEL! Python C:\\Python313_32 klasörüne kuruldu.")
+                
+                hedef = r"C:\Python313_32\Lib\site-packages"
+                if os.path.exists(hedef) and hedef not in sys.path:
+                    sys.path.insert(0, hedef)
+                    
+            except Exception as e:
+                self.log_yaz(f"❌ Hata: {e}")
+                self.lbl_durum0.setText("❌ Hata")
+            self.btn_python.setEnabled(True)
+        threading.Thread(target=download, daemon=True).start()
+
+    def komut_calistir(self, komut, lbl_widget):
+        def islem():
+            lbl_widget.setText("⏳ İşleniyor...")
+            lbl_widget.setStyleSheet("color: orange;")
+            self.log_yaz(f"> Komut Başlatıldı...")
+            try:
+                p = subprocess.Popen(komut, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, shell=True)
+                for line in p.stdout: self.log_yaz(line.strip())
+                p.wait()
+                if p.returncode == 0:
+                    lbl_widget.setText("✅ Tamamlandı")
+                    lbl_widget.setStyleSheet("color: green; font-weight: bold;")
+                else:
+                    lbl_widget.setText("⚠️ Tamamlandı")
+                    lbl_widget.setStyleSheet("color: green; font-weight: bold;")
+            except Exception as e:
+                self.log_yaz(f"❌ Hata: {e}")
+                lbl_widget.setText("❌ Hata")
+        threading.Thread(target=islem, daemon=True).start()
+
+    def kutuphaneleri_kur(self):
+        komut = 'pip install --upgrade pip setuptools wheel && pip install OpenOPC-Python3x asyncua pywin32 pyro4'
+        self.komut_calistir(komut, self.lbl_durum1)
+
+    def dll_kaydet(self):
+        komut = 'python -m pywin32_postinstall -install'
+        self.komut_calistir(komut, self.lbl_durum2)
+
+# =====================================================================
+# 3. BÖLÜM: GATEWAY MOTORU (INVOKETYPES BÖLÜM SONU CANAVARI HACKİ)
+# =====================================================================
+class GatewayWorker(QThread):
+    finished_signal = pyqtSignal()
+    
+    def __init__(self, prog_id, ip, etiketler):
+        super().__init__()
+        self.prog_id = prog_id; self.ip = ip; self.etiketler = etiketler; self.is_running = True
+
+    def run(self):
+        try:
+            hedef = r"C:\Python313_32\Lib\site-packages"
+            if os.path.exists(hedef) and hedef not in sys.path: sys.path.insert(0, hedef)
+
+            import pythoncom, OpenOPC, pywintypes
+            from asyncua import Server, ua
+            
+            def windows_saatini_cevir(dt): 
+                return datetime.datetime, (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
+            copyreg.pickle(type(pywintypes.Time(1)), windows_saatini_cevir)
+
+            async def main_loop():
+                srv = Server()
+                await srv.init()
+                srv.set_endpoint(f"opc.tcp://{self.ip}:4840/")
+                idx = await srv.register_namespace("http://mevlana/gateway")
+                root = await srv.nodes.objects.add_object(idx, "Saha_Izleme_Verileri")
+
+                async with srv:
+                    print(f"📡 OPC UA Yayınında: opc.tcp://{self.ip}:4840/")
+                    pythoncom.CoInitialize()
+                    opc = OpenOPC.client()
+                    opc.connect(self.prog_id)
+                    print("✅ OPC DA Sunucusuna Bağlanıldı.")
+                    
+                    etiket_haritasi = {}
+                    for et in self.etiketler:
+                        safe_name = et.replace(".", "_").replace(" ", "_")
+                        node = await root.add_variable(idx, safe_name, 0.0, ua.VariantType.Double)
+                        etiket_haritasi[et] = node
+                    
+                    print(f"🔄 Seçilen {len(self.etiketler)} etiket için canlı akış başlıyor...\n")
+
+                    while self.is_running:
+                        # --- HACK BURADA BAŞLIYOR ---
+                        # opc.read() bozuk olduğu için, doğrudan opc.properties() ile değeri çekiyoruz!
+                        for et_adi in etiket_haritasi.keys():
+                            try:
+                                # id=2 Matrikon'da 'Item Value' (Değer) anlamına gelir.
+                                deger = opc.properties(et_adi, id=2)
+                                
+                                if deger is not None:
+                                    node = etiket_haritasi[et_adi]
+                                    # Gelen değeri sayıya çevir ve UA'ya yaz
+                                    try:
+                                        num_val = float(deger)
+                                        await node.write_value(num_val, ua.VariantType.Double)
+                                        print(f"🟢 {et_adi} -> Değer: {num_val:.2f}")
+                                    except ValueError:
+                                        print(f"🔵 {et_adi} -> {deger} (Sayısal değil, sadece izleniyor)")
+                                else:
+                                    print(f"⚠️ {et_adi} sensöründen veri gelmedi (Boş).")
+                            except Exception as e:
+                                print(f"⚠️ Okuma hatası ({et_adi}): Hatalı sensör atlandı.")
+                        
+                        print("-" * 50)
+                        await asyncio.sleep(1)
+                    opc.close()
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(main_loop())
+            
+        except ImportError:
+            print("❌ Kütüphaneler eksik! Lütfen 'Otomatik Kurulum' menüsünden kurulumları tamamlayın.")
+        except Exception as e: 
+            print(f"❌ Motor Hatası: {e}")
+        finally: self.finished_signal.emit()
+
+    def stop(self): self.is_running = False
+
+# =====================================================================
+# 4. BÖLÜM: ANA UYGULAMA
+# =====================================================================
+class GatewayApp(QtWidgets.QMainWindow, Ui_btn_sunucu_tara):
+    def __init__(self):
+        super().__init__()
+        self.setupUi(self)
+        self.worker = None
+        self.kurulum_penceresi = KurulumPenceresi()
+        
+        self.txt_konsol.setStyleSheet("background: black; color: #00ff00; font-family: Consolas; font-size: 13px;")
+        class Stream(QObject):
+            written = pyqtSignal(str)
+            def write(self, text): self.written.emit(str(text))
+            def flush(self): pass
+        self.monitor = Stream()
+        self.monitor.written.connect(lambda t: self.txt_konsol.insertPlainText(t))
+        sys.stdout = self.monitor
+
+        self.btn_kurulum_ac.clicked.connect(self.kurulum_penceresi.show)
+        self.pushButton.clicked.connect(self.sunucu_tara)
+        self.btn_etiket_tara.clicked.connect(self.etiket_tara)
+        self.btn_baslat.clicked.connect(self.baslat)
+        self.btn_durdur.clicked.connect(self.durdur)
+
+    def sunucu_tara(self):
+        try:
+            hedef = r"C:\Python313_32\Lib\site-packages"
+            if os.path.exists(hedef) and hedef not in sys.path: sys.path.insert(0, hedef)
+            
+            import OpenOPC
+            opc = OpenOPC.client()
+            self.cb_sunucu.clear()
+            self.cb_sunucu.addItems(opc.servers())
+            print("✅ Sunucular başarıyla bulundu.\n")
+        except: print("❌ Önce Otomatik Kurulum menüsünden kütüphaneleri kurun!\n")
+
+    def etiket_tara(self):
+        try:
+            import OpenOPC
+            opc = OpenOPC.client()
+            opc.connect(self.cb_sunucu.currentText())
+            self.list_etiket.clear()
+            
+            tags = []
+            try:
+                klasor_ici = opc.list('Simulation Items.*', flat=True)
+                if klasor_ici: tags.extend(klasor_ici)
+                alias_ici = opc.list('Configured Aliases.*', flat=True)
+                if alias_ici: tags.extend(alias_ici)
+            except: pass
+
+            if not tags:
+                tags = ['sicaklik', 'Random.Real8', 'Random.Int4', 'Bucket Brigade.Real8', 'Random.Money']
+
+            self.list_etiket.addItems(tags)
+            opc.close()
+            print(f"✅ Sensörler başarıyla listelendi. Okumak istediklerinizi seçip Başlat'a basın.\n")
+        except Exception as e: 
+            print(f"❌ Bağlantı hatası: {e}\n")
+
+    def baslat(self):
+        srv = self.cb_sunucu.currentText()
+        secili_ogeler = self.list_etiket.selectedItems()
+        tags = [item.text() for item in secili_ogeler]
+
+        if not srv or not tags: return QtWidgets.QMessageBox.warning(self, "Hata", "Lütfen Sunucu ve Etiket seçimi yapın!")
+
+        self.btn_baslat.setEnabled(False); self.btn_durdur.setEnabled(True); self.txt_konsol.clear()
+        self.worker = GatewayWorker(srv, self.txt_ip.text(), tags)
+        self.worker.finished_signal.connect(self.bitti)
+        self.worker.start()
+
+    def durdur(self):
+        if self.worker: self.worker.stop(); self.btn_durdur.setEnabled(False)
+        print("\n🛑 Gateway kapatılıyor...")
+
+    def bitti(self):
+        self.btn_baslat.setEnabled(True); self.btn_durdur.setEnabled(False)
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    pencere = GatewayApp()
+    pencere.show()
+    sys.exit(app.exec_())
