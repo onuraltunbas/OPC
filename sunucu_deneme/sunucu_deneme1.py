@@ -22,10 +22,6 @@ import os
 import uuid
 import secrets
 import datetime
-import smtplib
-import asyncio
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from typing import Optional, List
 from functools import wraps
 
@@ -48,21 +44,15 @@ PANEL_KULLANICI = os.getenv("PANEL_KULLANICI", "admin")          # Panel kullan�
 PANEL_SIFRE     = os.getenv("PANEL_SIFRE", "admin123")           # Panel şifresi
 DATABASE_URL    = os.getenv("DATABASE_URL", "sqlite:///./lisanslar.db")
 
-# Mail ayarları (Railway env vars)
-MAIL_SMTP_HOST  = os.getenv("MAIL_SMTP_HOST", "smtp.gmail.com")
-MAIL_SMTP_PORT  = int(os.getenv("MAIL_SMTP_PORT", "587"))
-MAIL_KULLANICI  = os.getenv("MAIL_KULLANICI", "")   # ornek@gmail.com
-MAIL_SIFRE      = os.getenv("MAIL_SIFRE", "")       # Gmail App Password
-MAIL_GONDEREN   = os.getenv("MAIL_GONDEREN", "OPC Gateway <ornek@gmail.com>")
-
-# Site URL (Railway'de kendi domain'iniz)
-SITE_URL        = os.getenv("SITE_URL", "https://your-app.railway.app")
+# İndirme linki (Railway env var)
 INDIRME_LINKI   = os.getenv("INDIRME_LINKI", "https://your-download-link.com")
 
 # =====================================================================
 # VERİTABANI
 # =====================================================================
-engine   = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# SQLite için check_same_thread=False gerekli; PostgreSQL'de bu arg kullanılmaz
+_db_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine   = create_engine(DATABASE_URL, connect_args=_db_connect_args)
 Session_ = sessionmaker(bind=engine)
 Base     = declarative_base()
 
@@ -221,99 +211,7 @@ def ip_banlimi(s: Session, ip: str) -> bool:
     return ban is not None
 
 
-def mail_gonder(alici: str, konu: str, html_icerik: str):
-    """Senkron mail gönderici"""
-    if not MAIL_KULLANICI or not MAIL_SIFRE:
-        print(f"[MAIL] Mail ayarları eksik. Konu: {konu}, Alıcı: {alici}")
-        return False
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = konu
-        msg["From"]    = MAIL_GONDEREN
-        msg["To"]      = alici
-        msg.attach(MIMEText(html_icerik, "html", "utf-8"))
-        with smtplib.SMTP(MAIL_SMTP_HOST, MAIL_SMTP_PORT) as srv:
-            srv.ehlo()
-            srv.starttls()
-            srv.login(MAIL_KULLANICI, MAIL_SIFRE)
-            srv.sendmail(MAIL_KULLANICI, alici, msg.as_string())
-        print(f"[MAIL] Gönderildi → {alici}")
-        return True
-    except Exception as e:
-        print(f"[MAIL HATA] {e}")
-        return False
-
-
-def dogrulama_maili_gonder(email: str, ad: str, kod: str):
-    link = f"{SITE_URL}/dogrula?kod={kod}"
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#f8f9fa;padding:32px;border-radius:12px;">
-      <div style="background:#1565c0;padding:20px;border-radius:8px 8px 0 0;text-align:center;">
-        <h1 style="color:white;margin:0;font-size:22px;">OPC Gateway</h1>
-      </div>
-      <div style="background:white;padding:28px;border-radius:0 0 8px 8px;">
-        <h2 style="color:#1565c0;margin-top:0;">Merhaba {ad}!</h2>
-        <p style="color:#444;line-height:1.6;">Hesabınızı doğrulamak için aşağıdaki butona tıklayın:</p>
-        <div style="text-align:center;margin:28px 0;">
-          <a href="{link}" style="background:#1565c0;color:white;padding:14px 32px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:16px;">E-posta Adresimi Doğrula</a>
-        </div>
-        <p style="color:#888;font-size:13px;">Bu link 24 saat geçerlidir. Beklentiniz yoksa bu maili görmezden gelebilirsiniz.</p>
-      </div>
-    </div>
-    """
-    mail_gonder(email, "OPC Gateway — E-posta Doğrulama", html)
-
-
-def tessekkur_maili_gonder(email: str, ad: str, lisans_kodu: str, tur: str, bitis: Optional[datetime.datetime], admin_notu: Optional[str]):
-    bitis_str = bitis.strftime("%d.%m.%Y") if bitis else "Süresiz (Ömür Boyu)"
-    tur_map = {"aylik": "Aylık Lisans", "yillik": "Yıllık Lisans", "omur_boyu": "Ömür Boyu Lisans", "deneme": "Deneme Lisansı"}
-    tur_adi = tur_map.get(tur, tur)
-    not_html = f"<div style='background:#e8f5e9;border-left:4px solid #2e7d32;padding:12px 16px;margin:16px 0;border-radius:4px;'><b>Yönetici Notu:</b><br>{admin_notu}</div>" if admin_notu else ""
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f8f9fa;padding:32px;border-radius:12px;">
-      <div style="background:linear-gradient(135deg,#1565c0,#0d47a1);padding:24px;border-radius:8px 8px 0 0;text-align:center;">
-        <h1 style="color:white;margin:0;font-size:24px;">OPC Gateway</h1>
-        <p style="color:#90caf9;margin:4px 0 0;">Lisansınız Hazır!</p>
-      </div>
-      <div style="background:white;padding:28px;border-radius:0 0 8px 8px;">
-        <h2 style="color:#1565c0;margin-top:0;">Merhaba {ad}!</h2>
-        <p style="color:#444;line-height:1.6;">Satın alımınız için teşekkür ederiz. Lisansınız aşağıda:</p>
-        <div style="background:#e3f2fd;border:2px solid #1565c0;border-radius:8px;padding:20px;margin:20px 0;text-align:center;">
-          <p style="margin:0 0 8px;color:#666;font-size:13px;">LİSANS KODUNUZ</p>
-          <p style="margin:0;font-family:monospace;font-size:22px;font-weight:bold;color:#0d47a1;letter-spacing:2px;">{lisans_kodu}</p>
-        </div>
-        <table style="width:100%;border-collapse:collapse;font-size:14px;">
-          <tr><td style="padding:8px 0;color:#666;border-bottom:1px solid #eee;width:40%">Lisans Türü</td><td style="padding:8px 0;border-bottom:1px solid #eee;font-weight:bold;">{tur_adi}</td></tr>
-          <tr><td style="padding:8px 0;color:#666;width:40%">Geçerlilik</td><td style="padding:8px 0;font-weight:bold;">{bitis_str}</td></tr>
-        </table>
-        {not_html}
-        <div style="margin-top:24px;text-align:center;">
-          <a href="{INDIRME_LINKI}" style="background:#2e7d32;color:white;padding:14px 32px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:16px;">⬇ Programı İndir</a>
-        </div>
-        <p style="color:#888;font-size:12px;margin-top:24px;text-align:center;">Herhangi bir sorunuz için destek sistemimizden mesaj gönderebilirsiniz.</p>
-      </div>
-    </div>
-    """
-    mail_gonder(email, f"OPC Gateway — Lisansınız Hazır: {lisans_kodu}", html)
-
-
-def admin_mesaj_maili_gonder(kullanici_email: str, kullanici_adi: str, icerik: str):
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#f8f9fa;padding:32px;border-radius:12px;">
-      <div style="background:#1565c0;padding:20px;border-radius:8px 8px 0 0;text-align:center;">
-        <h1 style="color:white;margin:0;font-size:22px;">OPC Gateway — Destek</h1>
-      </div>
-      <div style="background:white;padding:28px;border-radius:0 0 8px 8px;">
-        <h2 style="color:#1565c0;margin-top:0;">Merhaba {kullanici_adi}!</h2>
-        <p style="color:#444;">Destek ekibinden yeni bir mesajınız var:</p>
-        <div style="background:#f0f4ff;border-left:4px solid #1565c0;padding:16px;border-radius:4px;margin:16px 0;color:#333;line-height:1.7;">{icerik}</div>
-        <div style="text-align:center;margin-top:24px;">
-          <a href="{SITE_URL}/dashboard" style="background:#1565c0;color:white;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;">Cevapla / Dashboard'a Git</a>
-        </div>
-      </div>
-    </div>
-    """
-    mail_gonder(kullanici_email, "OPC Gateway — Destek Mesajı", html)
+# Mail gönderimi devre dışı bırakıldı.
 
 
 # =====================================================================
@@ -634,7 +532,6 @@ class LisansOlusturIstek(BaseModel):
     tur:           str
     deneme_saat:   Optional[int] = 24
     notlar:        Optional[str] = None
-    tessekkur_maili_gonder: Optional[bool] = False
 
 
 @app.post("/panel/lisans-olustur", dependencies=[Depends(panel_dogrula)])
@@ -655,9 +552,6 @@ def lisans_olustur(istek: LisansOlusturIstek, s: Session = Depends(db)):
     )
     s.add(yeni)
     s.commit()
-    # Teşekkür maili gönder (isteğe bağlı)
-    if istek.tessekkur_maili_gonder and istek.musteri_email:
-        tessekkur_maili_gonder(istek.musteri_email, istek.musteri_adi, kod, istek.tur, bitis, istek.notlar)
     return {
         "lisans_kodu": kod,
         "musteri_adi": istek.musteri_adi,
@@ -774,23 +668,6 @@ async def talep_guncelle(request: Request, s: Session = Depends(db)):
         )
         s.add(yeni_lisans)
         s.commit()
-        # Teşekkür maili gönder
-        if k:
-            tessekkur_maili_gonder(k.email, k.ad_soyad, kod, talep.tur, bitis, data.get("admin_notu"))
-
-    # Red durumunda bilgi maili gönder
-    elif data["durum"] == "reddedildi" and data.get("admin_notu"):
-        if k:
-            html = f"""
-            <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:32px;">
-              <h2 style="color:#c62828;">Lisans Talebiniz Hakkında</h2>
-              <p>Merhaba {k.ad_soyad},</p>
-              <p>Lisans talebiniz incelenmiş ancak onaylanamamıştır.</p>
-              <div style="background:#ffebee;border-left:4px solid #c62828;padding:12px 16px;border-radius:4px;margin:16px 0;">{data['admin_notu']}</div>
-              <p>Daha fazla bilgi için destek sisteminden bizimle iletişime geçebilirsiniz.</p>
-            </div>
-            """
-            mail_gonder(k.email, "OPC Gateway — Lisans Talebi Hakkında", html)
     return {"basarili": True}
 
 
@@ -863,16 +740,11 @@ async def admin_mesaj_gonder(request: Request, s: Session = Depends(db)):
     data = await request.json()
     kullanici_id = data.get("kullanici_id")
     icerik = data.get("icerik", "").strip()
-    mail_gonder_flag = data.get("mail_gonder", False)
     if not kullanici_id or not icerik:
         raise HTTPException(status_code=400, detail="Eksik veri.")
     m = Mesaj(kullanici_id=kullanici_id, gonderen="admin", icerik=icerik, okundu=False)
     s.add(m)
     s.commit()
-    if mail_gonder_flag:
-        k = s.query(Kullanici).filter_by(id=kullanici_id).first()
-        if k:
-            admin_mesaj_maili_gonder(k.email, k.ad_soyad, icerik)
     return {"basarili": True}
 
 
@@ -974,6 +846,23 @@ def panel_kullanicilar(s: Session = Depends(db)):
             "lisans_tur": lisans.tur if lisans else None,
         })
     return sonuc
+
+
+@app.delete("/panel/kullanici-sil/{kullanici_id}", dependencies=[Depends(panel_dogrula)])
+def kullanici_sil(kullanici_id: str, s: Session = Depends(db)):
+    """Kullanıcıyı ve varsa aktif lisansını siler."""
+    k = s.query(Kullanici).filter_by(id=kullanici_id).first()
+    if not k:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+    # Aktif lisanslarını iptal et
+    s.query(Lisans).filter_by(musteri_email=k.email, aktif=True).update({"aktif": False})
+    # Taleplerini ve mesajlarını sil
+    s.query(LisansTalep).filter_by(kullanici_id=kullanici_id).delete()
+    s.query(Mesaj).filter_by(kullanici_id=kullanici_id).delete()
+    # Kullanıcıyı sil
+    s.delete(k)
+    s.commit()
+    return {"mesaj": f"{k.ad_soyad} ({k.email}) silindi, aktif lisansları iptal edildi."}
 
 
 # =====================================================================
@@ -1184,10 +1073,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
           <option value="deneme">Deneme</option>
         </select>
         <input type="number" id="l-saat" placeholder="Deneme süresi (saat)" value="24" min="1" max="8760">
-        <textarea id="l-not" placeholder="Not (mail içinde görünür)"></textarea>
-        <label style="font-size:13px;color:#aaa;display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px;">
-          <input type="checkbox" id="l-mail-gonder" style="width:auto;margin:0"> Teşekkür maili gönder
-        </label>
+        <textarea id="l-not" placeholder="Not"></textarea>
         <button class="btn btn-primary" onclick="lisansOlustur()">✚ Oluştur</button>
         <div id="l-sonuc" style="margin-top:10px;font-size:13px;color:#4caf50;font-weight:bold;font-family:monospace;"></div>
       </div>
@@ -1420,7 +1306,6 @@ function lisansOlustur() {
     tur: document.getElementById("l-tur").value,
     deneme_saat: parseInt(document.getElementById("l-saat").value) || 24,
     notlar: document.getElementById("l-not").value,
-    tessekkur_maili_gonder: document.getElementById("l-mail-gonder").checked,
   };
   if (!b.musteri_adi) { notif("Müşteri adı zorunlu!", true); return; }
   fetch("/panel/lisans-olustur", {method:"POST", headers:auth(), body:JSON.stringify(b)})
@@ -1576,9 +1461,6 @@ function konusmaSec(kullaniciId) {
         <textarea id="admin-msg-inp" placeholder="Mesajınızı yazın…" onkeydown="if(event.ctrlKey&&event.key==='Enter')adminMesajGonder()"></textarea>
         <div style="display:flex;flex-direction:column;gap:6px;">
           <button class="btn btn-primary btn-sm" onclick="adminMesajGonder()">Gönder</button>
-          <label style="font-size:11px;color:#555;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;">
-            <input type="checkbox" id="admin-mail-flag" style="width:auto;margin:0"> Mail gönder
-          </label>
         </div>
       </div>`;
     // Scroll to bottom
@@ -1593,13 +1475,11 @@ function adminMesajGonder() {
   if (!secilenKullaniciId) return;
   const icerik = document.getElementById("admin-msg-inp").value.trim();
   if (!icerik) return;
-  const mailFlag = document.getElementById("admin-mail-flag").checked;
   fetch("/panel/admin-mesaj-gonder", {method:"POST", headers:auth(), body:JSON.stringify({
     kullanici_id: secilenKullaniciId,
     icerik: icerik,
-    mail_gonder: mailFlag,
   })}).then(r => r.json()).then(() => {
-    notif("Mesaj gönderildi" + (mailFlag ? " + Mail" : ""));
+    notif("Mesaj gönderildi");
     konusmaSec(secilenKullaniciId);
   });
 }
@@ -1616,8 +1496,16 @@ function kullanicilariYukle() {
         <td>${k.son_giris}</td>
         <td><code>${k.son_ip||"-"}</code></td>
         <td>${k.lisans_kodu ? `<code>${k.lisans_kodu}</code> <span class="badge">${k.lisans_tur||""}</span>` : '<span style="color:#555">Yok</span>'}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="kullaniciSil('${k.id}','${k.ad_soyad}')">Sil</button></td>
       </tr>`).join("");
   });
+}
+
+function kullaniciSil(id, ad) {
+  if (!confirm(ad + " adlı kullanıcı ve tüm verileri (talepler, mesajlar) silinecek. Aktif lisansı varsa iptal edilecek. Emin misiniz?")) return;
+  fetch("/panel/kullanici-sil/" + id, {method: "DELETE", headers: auth()})
+    .then(r => r.json())
+    .then(d => { notif(d.mesaj || d.detail, !!d.detail); kullanicilariYukle(); });
 }
 
 // ===== IP BAN =====
