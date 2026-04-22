@@ -473,18 +473,16 @@ async def kayit_ol(request: Request, s: Session = Depends(db)):
     if s.query(Kullanici).filter_by(email=email).first():
         raise HTTPException(status_code=409, detail="Bu e-posta zaten kayıtlı.")
 
-    kod = secrets.token_urlsafe(32)
     k = Kullanici(
         ad_soyad=ad_soyad,
         email=email,
         sifre_hash=sifre_hashle(sifre),
-        dogrulama_kodu=kod,
+        email_dogrulandi=True,  # Doğrulama adımı kaldırıldı
         son_ip=request.client.host,
     )
     s.add(k)
     s.commit()
-    dogrulama_maili_gonder(email, ad_soyad, kod)
-    return {"basarili": True, "mesaj": "Kayıt başarılı! E-postanızı doğrulayın."}
+    return {"basarili": True, "mesaj": "Kayıt başarılı! Giriş yapabilirsiniz."}
 
 
 @app.get("/dogrula")
@@ -506,8 +504,7 @@ async def giris_yap(request: Request, response: Response, s: Session = Depends(d
     k = s.query(Kullanici).filter_by(email=email, sifre_hash=sifre_hashle(sifre)).first()
     if not k:
         raise HTTPException(status_code=401, detail="E-posta veya şifre yanlış.")
-    if not k.email_dogrulandi:
-        raise HTTPException(status_code=403, detail="E-posta adresinizi doğrulamanız gerekiyor.")
+    # E-posta doğrulama kontrolü kaldırıldı
     k.son_giris = datetime.datetime.utcnow()
     k.son_ip = request.client.host
     s.commit()
@@ -617,6 +614,7 @@ def profil(request: Request, s: Session = Depends(db)):
         "kayit_tar": k.kayit_tar.strftime("%d.%m.%Y"),
         "lisans": lisans_bilgi,
         "okunmamis_mesaj": okunmamis,
+        "indirme_linki": INDIRME_LINKI if lisans_bilgi else None,
     }
 
 
@@ -757,9 +755,31 @@ async def talep_guncelle(request: Request, s: Session = Depends(db)):
     if data.get("admin_notu"):
         talep.admin_notu = data["admin_notu"]
     s.commit()
-    # Red durumunda mail gönder
-    if data["durum"] == "reddedildi" and data.get("admin_notu"):
-        k = s.query(Kullanici).filter_by(id=talep.kullanici_id).first()
+
+    k = s.query(Kullanici).filter_by(id=talep.kullanici_id).first()
+
+    # Onay durumunda otomatik lisans oluştur
+    if data["durum"] == "onaylandi":
+        prefix_map = {"aylik": "AYL", "yillik": "YIL", "omur_boyu": "OBY", "deneme": "DEN"}
+        prefix = prefix_map.get(talep.tur, "STD")
+        kod = lisans_kodu_uret(prefix)
+        bitis = bitis_tarihi_hesapla(talep.tur)
+        yeni_lisans = Lisans(
+            lisans_kodu=kod,
+            musteri_adi=talep.ad_soyad,
+            musteri_email=talep.email,
+            tur=talep.tur,
+            bitis_tarihi=bitis,
+            notlar=data.get("admin_notu") or None,
+        )
+        s.add(yeni_lisans)
+        s.commit()
+        # Teşekkür maili gönder
+        if k:
+            tessekkur_maili_gonder(k.email, k.ad_soyad, kod, talep.tur, bitis, data.get("admin_notu"))
+
+    # Red durumunda bilgi maili gönder
+    elif data["durum"] == "reddedildi" and data.get("admin_notu"):
         if k:
             html = f"""
             <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:32px;">
@@ -2010,7 +2030,7 @@ async function kayitOl() {
     body: JSON.stringify({ad_soyad: ad, email, sifre})});
   const d = await r.json();
   if (r.ok) {
-    mesajGoster("kayit-ok", "✅ " + d.mesaj + " E-postanızı kontrol edin.");
+    mesajGoster("kayit-ok", "✅ " + d.mesaj);
   } else {
     mesajGoster("kayit-hata", d.detail || "Bir hata oluştu.");
   }
@@ -2067,6 +2087,13 @@ async function dashboardYukle() {
           <div class="license-code">${p.lisans.kod}</div>
           <div class="license-sub">Bu kodu program aktivasyonunda kullanın</div>
         </div>
+      </div>
+      <div class="dash-card full" style="text-align:center;">
+        <h3>Program İndir</h3>
+        <div class="dash-sub" style="margin-bottom:16px;">Lisansınız aktif. Programı indirip lisans kodunuzla aktive edebilirsiniz.</div>
+        <a href="${p.indirme_linki}" target="_blank" style="display:inline-flex;align-items:center;gap:10px;background:linear-gradient(135deg,var(--success),#16a34a);color:white;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:700;text-decoration:none;box-shadow:0 0 24px #22c55e33;transition:all 0.2s;" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 0 40px #22c55e55'" onmouseout="this.style.transform='';this.style.boxShadow='0 0 24px #22c55e33'">
+          ⬇ OPC Gateway'i İndir
+        </a>
       </div>`;
   } else {
     grid.innerHTML = `
