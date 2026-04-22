@@ -152,6 +152,7 @@ class PanelKullanici(Base):
     __tablename__ = "panel_kullanicilari"
     id = Column(Integer, primary_key=True, autoincrement=True)
     kullanici_adi = Column(String, unique=True, nullable=False)
+    isim_soyad = Column(String, nullable=True)
     email = Column(String, unique=True, nullable=True)
     sifre_hash = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
@@ -164,6 +165,7 @@ class PanelKullanici(Base):
     yetki_kullanici_ekle = Column(Boolean, default=False)
     yetki_mesaj_yaz = Column(Boolean, default=False)
     yetki_ip_ban = Column(Boolean, default=False)
+    yetki_uyelik_tur = Column(Boolean, default=False)
 
     son_giris = Column(DateTime, nullable=True)
     son_cikis = Column(DateTime, nullable=True)
@@ -177,6 +179,14 @@ class PanelLog(Base):
     kullanici_adi = Column(String)
     islem = Column(String)
     detay = Column(Text)
+
+
+class Ayarlar(Base):
+    """Sistem ayarları (Admin kullanıcı adı ve şifresi vs.)"""
+    __tablename__ = "ayarlar"
+    id = Column(Integer, primary_key=True)
+    admin_kullanici = Column(String, nullable=True)
+    admin_sifre_hash = Column(String, nullable=True)
 
 
 Base.metadata.create_all(engine)
@@ -245,6 +255,13 @@ def panel_log_yaz(s: Session, kullanici_adi: str, islem: str, detay: str = ""):
     s.commit()
 
 
+def get_ana_admin_creds(s: Session):
+    ayar = s.query(Ayarlar).first()
+    if ayar and ayar.admin_kullanici and ayar.admin_sifre_hash:
+        return ayar.admin_kullanici, ayar.admin_sifre_hash
+    return PANEL_KULLANICI, sifre_hashle(PANEL_SIFRE)
+
+
 def ip_banlimi(s: Session, ip: str) -> bool:
     ban = s.query(IpBan).filter_by(ip=ip, aktif=True).first()
     return ban is not None
@@ -304,10 +321,11 @@ def app_sirri_dogrula(request: Request):
 
 
 class PanelUserDto:
-    def __init__(self, kadi, is_admin, yetkiler):
+    def __init__(self, kadi, is_admin, yetkiler, isim_soyad=None):
         self.kullanici_adi = kadi
         self.is_admin = is_admin
         self.yetkiler = yetkiler
+        self.isim_soyad = isim_soyad
 
 def panel_dogrula(request: Request, s: Session = Depends(db)):
     auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
@@ -317,9 +335,12 @@ def panel_dogrula(request: Request, s: Session = Depends(db)):
         if len(parts) == 2:
             kadi = parts[0]
             sifre = parts[1]
+            
+            kadi_gercek, sifre_hash_gercek = get_ana_admin_creds(s)
+            
             # 1. Ana Admin
-            if kadi == PANEL_KULLANICI and sifre == PANEL_SIFRE:
-                return PanelUserDto(kadi, True, {})
+            if kadi == kadi_gercek and sifre_hashle(sifre) == sifre_hash_gercek:
+                return PanelUserDto(kadi, True, {}, isim_soyad="Admin")
             # 2. Alt Yetkili
             pk = s.query(PanelKullanici).filter_by(kullanici_adi=kadi, sifre_hash=sifre_hashle(sifre)).first()
             if pk:
@@ -332,8 +353,9 @@ def panel_dogrula(request: Request, s: Session = Depends(db)):
                     "kullanici_ekle": pk.yetki_kullanici_ekle,
                     "mesaj_yaz": pk.yetki_mesaj_yaz,
                     "ip_ban": pk.yetki_ip_ban,
+                    "uyelik_tur": pk.yetki_uyelik_tur,
                 }
-                return PanelUserDto(kadi, pk.is_admin, yetkiler)
+                return PanelUserDto(kadi, pk.is_admin, yetkiler, isim_soyad=pk.isim_soyad)
     raise HTTPException(status_code=401, detail="Panel kullanici adi veya sifresi yanlis.")
 
 
@@ -996,41 +1018,41 @@ async def ip_ban_kaldir(request: Request, user: PanelUserDto = Depends(yetki_kon
 
 # Panel: Üyelik türleri yönetimi
 @app.get("/panel/uyelik-turleri")
-def panel_uyelik_turleri(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+def panel_uyelik_turleri(user: PanelUserDto = Depends(yetki_kontrol("uyelik_tur")), s: Session = Depends(db)):
     turler = s.query(UyelikTuru).order_by(UyelikTuru.sira).all()
     return [{"id": t.id, "kod": t.kod, "ad": t.ad, "aciklama": t.aciklama, "aktif": t.aktif, "sira": t.sira} for t in turler]
 
 
 @app.post("/panel/uyelik-tur-ekle")
-async def uyelik_tur_ekle(request: Request, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+async def uyelik_tur_ekle(request: Request, user: PanelUserDto = Depends(yetki_kontrol("uyelik_tur")), s: Session = Depends(db)):
     data = await request.json()
     if s.query(UyelikTuru).filter_by(kod=data["kod"]).first():
         raise HTTPException(status_code=409, detail="Bu kod zaten mevcut.")
-    t = UyelikTuru(kod=data["kod"], ad=data["ad"], aciklama=data.get("aciklama", ""), sira=data.get("sira", 99))
-    s.add(t)
+    s.add(UyelikTuru(kod=data["kod"], ad=data["ad"], aciklama=data.get("aciklama", ""), sira=data.get("sira", 99)))
     s.commit()
+    panel_log_yaz(s, user.kullanici_adi, "Üyelik Türü Eklendi", f"Kod: {data['kod']}")
     return {"basarili": True}
 
 
 @app.post("/panel/uyelik-tur-guncelle")
-async def uyelik_tur_guncelle(request: Request, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+async def uyelik_tur_guncelle(request: Request, user: PanelUserDto = Depends(yetki_kontrol("uyelik_tur")), s: Session = Depends(db)):
     data = await request.json()
     t = s.query(UyelikTuru).filter_by(id=data["id"]).first()
     if not t:
         raise HTTPException(status_code=404, detail="Tür bulunamadı.")
-    if "ad" in data: t.ad = data["ad"]
-    if "aciklama" in data: t.aciklama = data["aciklama"]
-    if "aktif" in data: t.aktif = data["aktif"]
-    if "sira" in data: t.sira = data["sira"]
+    if "aktif" in data:
+        t.aktif = data["aktif"]
     s.commit()
+    panel_log_yaz(s, user.kullanici_adi, "Üyelik Türü Güncellendi", f"ID: {data['id']}")
     return {"basarili": True}
 
 
 @app.delete("/panel/uyelik-tur-sil/{tur_id}")
-def uyelik_tur_sil(tur_id: int, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+def uyelik_tur_sil(tur_id: int, user: PanelUserDto = Depends(yetki_kontrol("uyelik_tur")), s: Session = Depends(db)):
     t = s.query(UyelikTuru).filter_by(id=tur_id).first()
     if not t:
         raise HTTPException(status_code=404, detail="Tür bulunamadı.")
+    panel_log_yaz(s, user.kullanici_adi, "Üyelik Türü Silindi", f"Kod: {t.kod}")
     s.delete(t)
     s.commit()
     return {"basarili": True}
@@ -1086,9 +1108,12 @@ class GirisIstek(BaseModel):
 def panel_giris_yap(istek: GirisIstek, s: Session = Depends(db)):
     kadi = istek.kullanici
     sifre = istek.sifre
-    if kadi == PANEL_KULLANICI and sifre == PANEL_SIFRE:
+    
+    kadi_gercek, sifre_hash_gercek = get_ana_admin_creds(s)
+    
+    if kadi == kadi_gercek and sifre_hashle(sifre) == sifre_hash_gercek:
         panel_log_yaz(s, kadi, "Giriş Yaptı")
-        return {"basarili": True, "is_admin": True, "kullanici_adi": kadi, "yetkiler": {}}
+        return {"basarili": True, "is_admin": True, "kullanici_adi": kadi, "isim_soyad": "Admin", "yetkiler": {}}
         
     pk = s.query(PanelKullanici).filter_by(kullanici_adi=kadi, sifre_hash=sifre_hashle(sifre)).first()
     if pk:
@@ -1103,8 +1128,10 @@ def panel_giris_yap(istek: GirisIstek, s: Session = Depends(db)):
             "talep_onayla": pk.yetki_talep_onayla,
             "kullanici_ekle": pk.yetki_kullanici_ekle,
             "mesaj_yaz": pk.yetki_mesaj_yaz,
+            "ip_ban": pk.yetki_ip_ban,
+            "uyelik_tur": pk.yetki_uyelik_tur,
         }
-        return {"basarili": True, "is_admin": pk.is_admin, "kullanici_adi": kadi, "yetkiler": yetkiler}
+        return {"basarili": True, "is_admin": pk.is_admin, "kullanici_adi": kadi, "isim_soyad": pk.isim_soyad, "yetkiler": yetkiler}
     raise HTTPException(status_code=401, detail="Panel kullanici adi veya sifresi yanlis.")
 
 
@@ -1127,6 +1154,7 @@ def panel_yetkililer_getir(user: PanelUserDto = Depends(panel_dogrula), s: Sessi
     return [{
         "id": p.id,
         "kullanici_adi": p.kullanici_adi,
+        "isim_soyad": p.isim_soyad,
         "email": p.email,
         "is_admin": p.is_admin,
         "son_giris": p.son_giris.strftime("%d.%m.%Y %H:%M") if p.son_giris else "-",
@@ -1140,12 +1168,14 @@ def panel_yetkililer_getir(user: PanelUserDto = Depends(panel_dogrula), s: Sessi
             "kullanici_ekle": p.yetki_kullanici_ekle,
             "mesaj_yaz": p.yetki_mesaj_yaz,
             "ip_ban": p.yetki_ip_ban,
+            "uyelik_tur": p.yetki_uyelik_tur,
         }
     } for p in pk]
 
 
 class YetkiliEkleIstek(BaseModel):
     kullanici_adi: str
+    isim_soyad: str
     email: str
     sifre: str
     yetkiler: dict
@@ -1161,6 +1191,7 @@ def panel_yetkili_ekle(istek: YetkiliEkleIstek, user: PanelUserDto = Depends(yet
     
     y = PanelKullanici(
         kullanici_adi=istek.kullanici_adi,
+        isim_soyad=istek.isim_soyad,
         email=istek.email,
         sifre_hash=sifre_hashle(istek.sifre),
         yetki_lisans_olustur=istek.yetkiler.get("lisans_olustur", False),
@@ -1170,7 +1201,8 @@ def panel_yetkili_ekle(istek: YetkiliEkleIstek, user: PanelUserDto = Depends(yet
         yetki_talep_onayla=istek.yetkiler.get("talep_onayla", False),
         yetki_kullanici_ekle=istek.yetkiler.get("kullanici_ekle", False),
         yetki_mesaj_yaz=istek.yetkiler.get("mesaj_yaz", False),
-        yetki_ip_ban=istek.yetkiler.get("ip_ban", False)
+        yetki_ip_ban=istek.yetkiler.get("ip_ban", False),
+        yetki_uyelik_tur=istek.yetkiler.get("uyelik_tur", False)
     )
     s.add(y)
     s.commit()
@@ -1202,6 +1234,27 @@ def panel_loglari_getir(user: PanelUserDto = Depends(panel_dogrula), s: Session 
         "islem": pl.islem,
         "detay": pl.detay or ""
     } for pl in plogs]
+
+
+class AdminGuncelleIstek(BaseModel):
+    yeni_kullanici: str
+    yeni_sifre: str
+
+@app.post("/panel/admin-guncelle")
+def admin_guncelle(istek: AdminGuncelleIstek, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Yalnızca ana admin değiştirebilir.")
+    
+    ayar = s.query(Ayarlar).first()
+    if not ayar:
+        ayar = Ayarlar()
+        s.add(ayar)
+    
+    ayar.admin_kullanici = istek.yeni_kullanici
+    ayar.admin_sifre_hash = sifre_hashle(istek.yeni_sifre)
+    s.commit()
+    panel_log_yaz(s, user.kullanici_adi, "Admin Bilgilerini Değiştirdi")
+    return {"basarili": True, "mesaj": "Admin bilgileri güncellendi. Lütfen tekrar giriş yapın."}
 
 
 # =====================================================================
@@ -1240,10 +1293,14 @@ a { color: inherit; text-decoration: none; }
 .nav-item .badge { background: #ff4757; color: white; border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 700; margin-left: auto; }
 .nav-icon { font-size: 16px; width: 20px; text-align: center; }
 
-.main { margin-left: 220px; padding: 24px; }
+.main { margin-left: 220px; padding: 24px; position: relative; }
 .page { display: none; }
 .page.active { display: block; }
 .page-title { font-size: 20px; font-weight: 700; color: #e0e0e0; margin-bottom: 20px; }
+
+/* Greeting */
+#panel-greeting { position: absolute; right: 24px; top: 24px; font-size: 14px; font-weight: 600; color: #8a9bc0; z-index: 10; }
+
 
 /* Cards */
 .card { background: #1a1d2e; border: 1px solid #2a2d3e; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
@@ -1408,7 +1465,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
   <div class="nav-item yetki-ip-ban" onclick="sayfaAc('ip-banlar')" id="nav-ip-banlar" style="display:none">
     <span class="nav-icon">🚫</span> IP Ban
   </div>
-  <div class="nav-item" onclick="sayfaAc('uyelik-turleri')" id="nav-uyelik-turleri">
+  <div class="nav-item yetki-uyelik-tur" onclick="sayfaAc('uyelik-turleri')" id="nav-uyelik-turleri" style="display:none">
     <span class="nav-icon">⚙️</span> Üyelik Türleri
   </div>
   <div class="nav-item" onclick="sayfaAc('loglar')" id="nav-loglar">
@@ -1427,6 +1484,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
 
 <!-- Main -->
 <div class="main">
+  <div id="panel-greeting"></div>
 
   <!-- Lisanslar -->
   <div class="page active" id="page-lisanslar">
@@ -1632,10 +1690,22 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
   <!-- Yetkililer -->
   <div class="page" id="page-yetkililer">
     <div class="page-title">🛡️ Panel Yetkilileri</div>
+    
+    <div class="card yetki-admin-only" style="margin-bottom:24px;border-color:#5b8cff44;background:#131828;">
+      <h3 style="color:#5b8cff">🛠️ Ana Admin Bilgilerini Güncelle</h3>
+      <p style="font-size:12px;color:#aaa;margin-bottom:12px;">Sistemin ana yöneticisi (Kurucu) için giriş bilgilerini değiştirin.</p>
+      <div style="display:flex;gap:12px;max-width:500px;">
+        <input type="text" id="a-yeni-kadi" placeholder="Yeni Kullanıcı Adı">
+        <input type="password" id="a-yeni-sifre" placeholder="Yeni Şifre">
+        <button class="btn btn-warning" onclick="adminGuncelle()" style="white-space:nowrap;">Değiştir</button>
+      </div>
+    </div>
+    
     <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;">
       <div class="card">
         <h3>Yeni Yetkili Ekle</h3>
         <input type="text" id="y-kadi" placeholder="Kullanıcı Adı *">
+        <input type="text" id="y-isim" placeholder="İsim Soyisim *">
         <input type="email" id="y-email" placeholder="E-posta *">
         <input type="password" id="y-sifre" placeholder="Şifre *">
         <div style="margin:14px 0;font-size:12px;color:#ccc;display:flex;flex-direction:column;gap:6px;">
@@ -1647,6 +1717,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
           <label><input type="checkbox" id="cb-kullanici_ekle"> Panel Kullanıcısı (Yetkili) Ekleme</label>
           <label><input type="checkbox" id="cb-mesaj_yaz"> Mesaj Yazabilme</label>
           <label><input type="checkbox" id="cb-ip_ban"> IP Banlama & Kaldırma</label>
+          <label><input type="checkbox" id="cb-uyelik_tur"> Üyelik Türleri Yönetimi</label>
         </div>
         <button class="btn btn-primary" onclick="yetkiliEkle()">✚ Ekle</button>
       </div>
@@ -1657,7 +1728,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
         </div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Kullanıcı Adı</th><th>E-posta</th><th>Rol</th><th>Yetkiler</th><th>Son Giriş</th><th>Son Çıkış</th><th>İşlem</th></tr></thead>
+            <thead><tr><th>Kullanıcı Adı</th><th>İsim Soyisim</th><th>Rol</th><th>Yetkiler</th><th>Son Giriş</th><th>Son Çıkış</th><th>İşlem</th></tr></thead>
             <tbody id="yetkili-tablo"></tbody>
           </table>
         </div>
@@ -1723,7 +1794,24 @@ function arayuzuYetkilendir() {
   goster("yetki-hwid-sifirla", "hwid_sifirla");
   goster("yetki-sure-uzat", "sure_uzat");
   goster("yetki-ip-ban", "ip_ban");
+  goster("yetki-uyelik-tur", "uyelik_tur");
   // Talep onayla butonu ve JS içi render kısımlarını ayrıca idare edeceğiz.
+}
+
+function updateGreeting() {
+  const hr = new Date().getHours();
+  let msj = "İyi geceler";
+  if (hr >= 6 && hr < 12) msj = "Günaydın";
+  else if (hr >= 12 && hr < 18) msj = "İyi günler";
+  else if (hr >= 18 && hr < 24) msj = "İyi akşamlar";
+  
+  const el = document.getElementById("panel-greeting");
+  if (!el) return;
+  if (window.IS_ADMIN) {
+    el.innerHTML = `<span style="color:#5b8cff">🛡️ Ana Admin Paneli</span>`;
+  } else {
+    el.innerHTML = `${msj}, <span style="color:#e0e0e0">${window.ISIM_SOYAD || window.KULLANICI_ADI}</span>`;
+  }
 }
 
 function panelGiris() {
@@ -1740,7 +1828,10 @@ function panelGiris() {
         TOKEN = k + ":" + s;
         window.IS_ADMIN = d.is_admin;
         window.YETKILER = d.yetkiler;
+        window.ISIM_SOYAD = d.isim_soyad;
+        window.KULLANICI_ADI = d.kullanici_adi;
         arayuzuYetkilendir();
+        updateGreeting();
         
         document.getElementById("login-overlay").style.display = "none";
         lisanslariYukle();
@@ -2215,6 +2306,23 @@ function logYukle() {
 }
 
 // ===== YETKİLİLER (RBAC) =====
+function adminGuncelle() {
+  const kadi = document.getElementById("a-yeni-kadi").value.trim();
+  const sifre = document.getElementById("a-yeni-sifre").value.trim();
+  if (!kadi || !sifre) { notif("Kullanıcı adı ve şifre boş olamaz!", true); return; }
+  
+  if (!confirm("Ana admin giriş bilgilerini değiştirmek üzeresiniz. Onaylıyor musunuz?")) return;
+  
+  fetch("/panel/admin-guncelle", {
+    method: "POST", headers: auth(), body: JSON.stringify({yeni_kullanici: kadi, yeni_sifre: sifre})
+  }).then(r => r.json()).then(d => {
+    notif(d.mesaj || d.detail, !d.basarili);
+    if(d.basarili) {
+       setTimeout(() => panelCikis(), 1500);
+    }
+  });
+}
+
 function yetkilileriYukle() {
   fetch("/panel/yetkililer", {headers: auth()}).then(r => r.json()).then(liste => {
     if(liste.detail) {
@@ -2225,7 +2333,7 @@ function yetkilileriYukle() {
     document.getElementById("yetkili-tablo").innerHTML = liste.map(y => `
       <tr>
         <td>${y.kullanici_adi}</td>
-        <td>${y.email || "-"}</td>
+        <td>${y.isim_soyad || "-"}</td>
         <td><span class="badge ${y.is_admin ? 'b-onay' : 'b-bekl'}">${y.is_admin ? 'Süper Admin' : 'Yetkili'}</span></td>
         <td style="max-width:200px;line-height:1.8">${y.is_admin ? '<span class="badge b-onay">TÜM YETKİLER</span>' : yStr(y.yetkiler)}</td>
         <td>${y.son_giris}</td>
@@ -2239,6 +2347,7 @@ function yetkilileriYukle() {
 
 function yetkiliEkle() {
   const kullanici_adi = document.getElementById("y-kadi").value.trim();
+  const isim_soyad = document.getElementById("y-isim").value.trim();
   const email = document.getElementById("y-email").value.trim();
   const sifre = document.getElementById("y-sifre").value.trim();
   const yetkiler = {
@@ -2252,16 +2361,17 @@ function yetkiliEkle() {
       ip_ban: document.getElementById("cb-ip_ban").checked,
   };
   
-  if (!kullanici_adi || !email || !sifre) { notif("Tüm alanları doldurun!", true); return; }
+  if (!kullanici_adi || !email || !sifre || !isim_soyad) { notif("Tüm alanları doldurun!", true); return; }
   
   fetch("/panel/yetkili-ekle", {
       method:"POST", 
       headers:auth(), 
-      body:JSON.stringify({kullanici_adi, email, sifre, yetkiler})
+      body:JSON.stringify({kullanici_adi, isim_soyad, email, sifre, yetkiler})
   }).then(r => r.json()).then(d => {
       if(d.basarili) {
           notif("Yetkili başarıyla eklendi");
           document.getElementById("y-kadi").value = "";
+          document.getElementById("y-isim").value = "";
           document.getElementById("y-email").value = "";
           document.getElementById("y-sifre").value = "";
           yetkilileriYukle();
