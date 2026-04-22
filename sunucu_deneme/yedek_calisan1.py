@@ -147,38 +147,6 @@ class UyelikTuru(Base):
     sira        = Column(Integer, default=0)
 
 
-class PanelKullanici(Base):
-    """Alt yetkili panel kullanıcıları"""
-    __tablename__ = "panel_kullanicilari"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    kullanici_adi = Column(String, unique=True, nullable=False)
-    email = Column(String, unique=True, nullable=True)
-    sifre_hash = Column(String, nullable=False)
-    is_admin = Column(Boolean, default=False)
-    
-    yetki_lisans_olustur = Column(Boolean, default=False)
-    yetki_lisans_sil = Column(Boolean, default=False)
-    yetki_hwid_sifirla = Column(Boolean, default=False)
-    yetki_sure_uzat = Column(Boolean, default=False)
-    yetki_talep_onayla = Column(Boolean, default=False)
-    yetki_kullanici_ekle = Column(Boolean, default=False)
-    yetki_mesaj_yaz = Column(Boolean, default=False)
-    yetki_ip_ban = Column(Boolean, default=False)
-
-    son_giris = Column(DateTime, nullable=True)
-    son_cikis = Column(DateTime, nullable=True)
-
-
-class PanelLog(Base):
-    """Panel kullanıcılarının eylemleri"""
-    __tablename__ = "panel_loglar"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    tarih = Column(DateTime, default=datetime.datetime.utcnow)
-    kullanici_adi = Column(String)
-    islem = Column(String)
-    detay = Column(Text)
-
-
 Base.metadata.create_all(engine)
 
 
@@ -240,11 +208,6 @@ def log_yaz(s: Session, islem, lisans_kodu, hwid, ip, mesaj):
     s.commit()
 
 
-def panel_log_yaz(s: Session, kullanici_adi: str, islem: str, detay: str = ""):
-    s.add(PanelLog(kullanici_adi=kullanici_adi, islem=islem, detay=detay))
-    s.commit()
-
-
 def ip_banlimi(s: Session, ip: str) -> bool:
     ban = s.query(IpBan).filter_by(ip=ip, aktif=True).first()
     return ban is not None
@@ -303,48 +266,15 @@ def app_sirri_dogrula(request: Request):
         raise HTTPException(status_code=403, detail="Yetkisiz erisim.")
 
 
-class PanelUserDto:
-    def __init__(self, kadi, is_admin, yetkiler):
-        self.kullanici_adi = kadi
-        self.is_admin = is_admin
-        self.yetkiler = yetkiler
-
-def panel_dogrula(request: Request, s: Session = Depends(db)):
+def panel_dogrula(request: Request):
     auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    # Format: "Basic base64(kullanici:sifre)" veya "Bearer kullanici:sifre"
     if auth.startswith("Bearer "):
         token = auth[7:]
         parts = token.split(":", 1)
-        if len(parts) == 2:
-            kadi = parts[0]
-            sifre = parts[1]
-            # 1. Ana Admin
-            if kadi == PANEL_KULLANICI and sifre == PANEL_SIFRE:
-                return PanelUserDto(kadi, True, {})
-            # 2. Alt Yetkili
-            pk = s.query(PanelKullanici).filter_by(kullanici_adi=kadi, sifre_hash=sifre_hashle(sifre)).first()
-            if pk:
-                yetkiler = {
-                    "lisans_olustur": pk.yetki_lisans_olustur,
-                    "lisans_sil": pk.yetki_lisans_sil,
-                    "hwid_sifirla": pk.yetki_hwid_sifirla,
-                    "sure_uzat": pk.yetki_sure_uzat,
-                    "talep_onayla": pk.yetki_talep_onayla,
-                    "kullanici_ekle": pk.yetki_kullanici_ekle,
-                    "mesaj_yaz": pk.yetki_mesaj_yaz,
-                    "ip_ban": pk.yetki_ip_ban,
-                }
-                return PanelUserDto(kadi, pk.is_admin, yetkiler)
+        if len(parts) == 2 and parts[0] == PANEL_KULLANICI and parts[1] == PANEL_SIFRE:
+            return
     raise HTTPException(status_code=401, detail="Panel kullanici adi veya sifresi yanlis.")
-
-
-def yetki_kontrol(istenen_yetki: str):
-    def checker(user: PanelUserDto = Depends(panel_dogrula)):
-        if user.is_admin:
-            return user
-        if not user.yetkiler.get(istenen_yetki, False):
-            raise HTTPException(status_code=403, detail="Bu işlem için yetkiniz bulunmamaktadır.")
-        return user
-    return checker
 
 
 # =====================================================================
@@ -674,8 +604,8 @@ class LisansOlusturIstek(BaseModel):
     notlar:        Optional[str] = None
 
 
-@app.post("/panel/lisans-olustur")
-def lisans_olustur(istek: LisansOlusturIstek, user: PanelUserDto = Depends(yetki_kontrol("lisans_olustur")), s: Session = Depends(db)):
+@app.post("/panel/lisans-olustur", dependencies=[Depends(panel_dogrula)])
+def lisans_olustur(istek: LisansOlusturIstek, s: Session = Depends(db)):
     turler = {"aylik", "yillik", "omur_boyu", "deneme"}
     if istek.tur not in turler:
         raise HTTPException(status_code=400, detail=f"Geçersiz tür.")
@@ -692,7 +622,6 @@ def lisans_olustur(istek: LisansOlusturIstek, user: PanelUserDto = Depends(yetki
     )
     s.add(yeni)
     s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "Lisans Oluşturdu", f"Kod: {kod}")
     return {
         "lisans_kodu": kod,
         "musteri_adi": istek.musteri_adi,
@@ -702,8 +631,8 @@ def lisans_olustur(istek: LisansOlusturIstek, user: PanelUserDto = Depends(yetki
     }
 
 
-@app.get("/panel/lisanslar")
-def lisanslar_listele(filtre: str = "hepsi", user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/lisanslar", dependencies=[Depends(panel_dogrula)])
+def lisanslar_listele(filtre: str = "hepsi", s: Session = Depends(db)):
     simdi = datetime.datetime.utcnow()
     liste = s.query(Lisans).order_by(Lisans.olusturma_tar.desc()).all()
     sonuc = []
@@ -740,8 +669,8 @@ def lisanslar_listele(filtre: str = "hepsi", user: PanelUserDto = Depends(panel_
     return sonuc
 
 
-@app.get("/panel/iptal-istatistikleri")
-def iptal_istatistikleri(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/iptal-istatistikleri", dependencies=[Depends(panel_dogrula)])
+def iptal_istatistikleri(s: Session = Depends(db)):
     """Admin için iptal nedenlerini gruplu istatistik olarak döndürür."""
     iptal_lisanslar = s.query(Lisans).filter(Lisans.aktif == False, Lisans.iptal_nedeni != None).all()  # noqa
     # Toplam sayılar
@@ -762,19 +691,18 @@ def iptal_istatistikleri(user: PanelUserDto = Depends(panel_dogrula), s: Session
     }
 
 
-@app.post("/panel/iptal")
-def iptal_et(lisans_kodu: str, user: PanelUserDto = Depends(yetki_kontrol("lisans_sil")), s: Session = Depends(db)):
+@app.post("/panel/iptal", dependencies=[Depends(panel_dogrula)])
+def iptal_et(lisans_kodu: str, s: Session = Depends(db)):
     lisans = s.query(Lisans).filter_by(lisans_kodu=lisans_kodu.upper()).first()
     if not lisans:
         raise HTTPException(status_code=404, detail="Lisans bulunamadı.")
     lisans.aktif = False
     s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "Lisans İptal Etti", f"Kod: {lisans_kodu}")
     return {"mesaj": f"{lisans_kodu} lisansı iptal edildi."}
 
 
-@app.delete("/panel/lisans-sil/{lisans_kodu}")
-def lisans_sil(lisans_kodu: str, user: PanelUserDto = Depends(yetki_kontrol("lisans_sil")), s: Session = Depends(db)):
+@app.delete("/panel/lisans-sil/{lisans_kodu}", dependencies=[Depends(panel_dogrula)])
+def lisans_sil(lisans_kodu: str, s: Session = Depends(db)):
     """Lisansı kalıcı olarak siler (aktif olsa bile)."""
     lisans = s.query(Lisans).filter_by(lisans_kodu=lisans_kodu.upper()).first()
     if not lisans:
@@ -782,24 +710,22 @@ def lisans_sil(lisans_kodu: str, user: PanelUserDto = Depends(yetki_kontrol("lis
     log_yaz(s, "silindi", lisans.lisans_kodu, lisans.hwid, "panel", "Admin tarafından lisans silindi")
     s.delete(lisans)
     s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "Lisans Kalıcı Sildi", f"Kod: {lisans_kodu}")
     return {"mesaj": f"{lisans_kodu} lisansı kalıcı olarak silindi."}
 
 
-@app.post("/panel/hwid-sifirla")
-def hwid_sifirla(lisans_kodu: str, user: PanelUserDto = Depends(yetki_kontrol("hwid_sifirla")), s: Session = Depends(db)):
+@app.post("/panel/hwid-sifirla", dependencies=[Depends(panel_dogrula)])
+def hwid_sifirla(lisans_kodu: str, s: Session = Depends(db)):
     lisans = s.query(Lisans).filter_by(lisans_kodu=lisans_kodu.upper()).first()
     if not lisans:
         raise HTTPException(status_code=404, detail="Lisans bulunamadı.")
     lisans.hwid = None
     lisans.aktivasyon_tar = None
     s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "HWID Sıfırladı", f"Kod: {lisans_kodu}")
     return {"mesaj": f"{lisans_kodu} için HWID sıfırlandı."}
 
 
-@app.post("/panel/sure-uzat")
-def sure_uzat(lisans_kodu: str, gun: int, user: PanelUserDto = Depends(yetki_kontrol("sure_uzat")), s: Session = Depends(db)):
+@app.post("/panel/sure-uzat", dependencies=[Depends(panel_dogrula)])
+def sure_uzat(lisans_kodu: str, gun: int, s: Session = Depends(db)):
     lisans = s.query(Lisans).filter_by(lisans_kodu=lisans_kodu.upper()).first()
     if not lisans:
         raise HTTPException(status_code=404, detail="Lisans bulunamadı.")
@@ -809,19 +735,18 @@ def sure_uzat(lisans_kodu: str, gun: int, user: PanelUserDto = Depends(yetki_kon
     lisans.bitis_tarihi = baz + datetime.timedelta(days=gun)
     lisans.aktif = True
     s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "Süre Uzattı", f"Kod: {lisans_kodu}, +{gun} gün")
     return {"mesaj": f"{gun} gün eklendi.", "yeni_bitis": lisans.bitis_tarihi.strftime("%d.%m.%Y %H:%M")}
 
 
-@app.get("/panel/loglar")
-def loglar(son: int = 100, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/loglar", dependencies=[Depends(panel_dogrula)])
+def loglar(son: int = 100, s: Session = Depends(db)):
     logs = s.query(Log).order_by(Log.tarih.desc()).limit(son).all()
     return [{"tarih": l.tarih.strftime("%d.%m.%Y %H:%M:%S"), "islem": l.islem, "lisans_kodu": l.lisans_kodu, "hwid": l.hwid, "ip": l.ip, "mesaj": l.mesaj} for l in logs]
 
 
 # Panel: Talepler
-@app.get("/panel/talepler")
-def panel_talepler(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/talepler", dependencies=[Depends(panel_dogrula)])
+def panel_talepler(s: Session = Depends(db)):
     talepler = s.query(LisansTalep).order_by(LisansTalep.talep_tar.desc()).all()
     return [
         {
@@ -835,8 +760,8 @@ def panel_talepler(user: PanelUserDto = Depends(panel_dogrula), s: Session = Dep
     ]
 
 
-@app.post("/panel/talep-guncelle")
-async def talep_guncelle(request: Request, user: PanelUserDto = Depends(yetki_kontrol("talep_onayla")), s: Session = Depends(db)):
+@app.post("/panel/talep-guncelle", dependencies=[Depends(panel_dogrula)])
+async def talep_guncelle(request: Request, s: Session = Depends(db)):
     data = await request.json()
     talep = s.query(LisansTalep).filter_by(id=data["talep_id"]).first()
     if not talep:
@@ -876,13 +801,12 @@ async def talep_guncelle(request: Request, user: PanelUserDto = Depends(yetki_ko
         )
         s.add(yeni_lisans)
         s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "Talep İşlem", f"ID: {talep.id}, Durum: {data['durum']}")
     return {"basarili": True}
 
 
 # Panel: Mesajlar
-@app.get("/panel/mesajlar-ozet")
-def panel_mesajlar_ozet(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/mesajlar-ozet", dependencies=[Depends(panel_dogrula)])
+def panel_mesajlar_ozet(s: Session = Depends(db)):
     """Her kullanıcı için son mesaj ve okunmamış sayısı"""
     kullanicilar = s.query(Kullanici).all()
     sonuc = []
@@ -914,8 +838,8 @@ def panel_mesajlar_ozet(user: PanelUserDto = Depends(panel_dogrula), s: Session 
     return sonuc
 
 
-@app.get("/panel/kullanici-mesajlar/{kullanici_id}")
-def kullanici_mesajlari(kullanici_id: str, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/kullanici-mesajlar/{kullanici_id}", dependencies=[Depends(panel_dogrula)])
+def kullanici_mesajlari(kullanici_id: str, s: Session = Depends(db)):
     # Okunmamış kullanıcı mesajlarını okundu yap
     s.query(Mesaj).filter_by(kullanici_id=kullanici_id, gonderen="kullanici", okundu=False).update({"okundu": True})
     s.commit()
@@ -944,8 +868,8 @@ def kullanici_mesajlari(kullanici_id: str, user: PanelUserDto = Depends(panel_do
     }
 
 
-@app.post("/panel/admin-mesaj-gonder")
-async def admin_mesaj_gonder(request: Request, user: PanelUserDto = Depends(yetki_kontrol("mesaj_yaz")), s: Session = Depends(db)):
+@app.post("/panel/admin-mesaj-gonder", dependencies=[Depends(panel_dogrula)])
+async def admin_mesaj_gonder(request: Request, s: Session = Depends(db)):
     data = await request.json()
     kullanici_id = data.get("kullanici_id")
     icerik = data.get("icerik", "").strip()
@@ -958,32 +882,32 @@ async def admin_mesaj_gonder(request: Request, user: PanelUserDto = Depends(yetk
 
 
 # Panel: IP Ban
-@app.get("/panel/ip-banlar")
-def ip_banlar(user: PanelUserDto = Depends(yetki_kontrol("ip_ban")), s: Session = Depends(db)):
+@app.get("/panel/ip-banlar", dependencies=[Depends(panel_dogrula)])
+def ip_banlar(s: Session = Depends(db)):
     banlar = s.query(IpBan).order_by(IpBan.tarih.desc()).all()
     return [{"id": b.id, "ip": b.ip, "sebep": b.sebep or "", "tarih": b.tarih.strftime("%d.%m.%Y %H:%M"), "aktif": b.aktif} for b in banlar]
 
 
-@app.post("/panel/ip-ban-ekle")
-async def ip_ban_ekle(request: Request, user: PanelUserDto = Depends(yetki_kontrol("ip_ban")), s: Session = Depends(db)):
+@app.post("/panel/ip-ban-ekle", dependencies=[Depends(panel_dogrula)])
+async def ip_ban_ekle(request: Request, s: Session = Depends(db)):
     data = await request.json()
     ip    = data.get("ip", "").strip()
     sebep = data.get("sebep", "")
     if not ip:
-        raise HTTPException(status_code=400, detail="IP adresi gereklidir.")
-    ban = s.query(IpBan).filter_by(ip=ip).first()
-    if ban:
-        ban.sebep = sebep
-        ban.aktif = True
-    else:
-        s.add(IpBan(ip=ip, sebep=sebep))
+        raise HTTPException(status_code=400, detail="IP zorunlu.")
+    mevcut = s.query(IpBan).filter_by(ip=ip).first()
+    if mevcut:
+        mevcut.aktif = True
+        mevcut.sebep = sebep
+        s.commit()
+        return {"mesaj": f"{ip} tekrar banlandı."}
+    s.add(IpBan(ip=ip, sebep=sebep))
     s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "IP Banladı", f"IP: {ip}, Sebep: {sebep}")
     return {"mesaj": f"{ip} banlandı."}
 
 
-@app.post("/panel/ip-ban-kaldir")
-async def ip_ban_kaldir(request: Request, user: PanelUserDto = Depends(yetki_kontrol("ip_ban")), s: Session = Depends(db)):
+@app.post("/panel/ip-ban-kaldir", dependencies=[Depends(panel_dogrula)])
+async def ip_ban_kaldir(request: Request, s: Session = Depends(db)):
     data = await request.json()
     ip = data.get("ip", "").strip()
     ban = s.query(IpBan).filter_by(ip=ip).first()
@@ -995,14 +919,14 @@ async def ip_ban_kaldir(request: Request, user: PanelUserDto = Depends(yetki_kon
 
 
 # Panel: Üyelik türleri yönetimi
-@app.get("/panel/uyelik-turleri")
-def panel_uyelik_turleri(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/uyelik-turleri", dependencies=[Depends(panel_dogrula)])
+def panel_uyelik_turleri(s: Session = Depends(db)):
     turler = s.query(UyelikTuru).order_by(UyelikTuru.sira).all()
     return [{"id": t.id, "kod": t.kod, "ad": t.ad, "aciklama": t.aciklama, "aktif": t.aktif, "sira": t.sira} for t in turler]
 
 
-@app.post("/panel/uyelik-tur-ekle")
-async def uyelik_tur_ekle(request: Request, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.post("/panel/uyelik-tur-ekle", dependencies=[Depends(panel_dogrula)])
+async def uyelik_tur_ekle(request: Request, s: Session = Depends(db)):
     data = await request.json()
     if s.query(UyelikTuru).filter_by(kod=data["kod"]).first():
         raise HTTPException(status_code=409, detail="Bu kod zaten mevcut.")
@@ -1012,8 +936,8 @@ async def uyelik_tur_ekle(request: Request, user: PanelUserDto = Depends(panel_d
     return {"basarili": True}
 
 
-@app.post("/panel/uyelik-tur-guncelle")
-async def uyelik_tur_guncelle(request: Request, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.post("/panel/uyelik-tur-guncelle", dependencies=[Depends(panel_dogrula)])
+async def uyelik_tur_guncelle(request: Request, s: Session = Depends(db)):
     data = await request.json()
     t = s.query(UyelikTuru).filter_by(id=data["id"]).first()
     if not t:
@@ -1026,8 +950,8 @@ async def uyelik_tur_guncelle(request: Request, user: PanelUserDto = Depends(pan
     return {"basarili": True}
 
 
-@app.delete("/panel/uyelik-tur-sil/{tur_id}")
-def uyelik_tur_sil(tur_id: int, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.delete("/panel/uyelik-tur-sil/{tur_id}", dependencies=[Depends(panel_dogrula)])
+def uyelik_tur_sil(tur_id: int, s: Session = Depends(db)):
     t = s.query(UyelikTuru).filter_by(id=tur_id).first()
     if not t:
         raise HTTPException(status_code=404, detail="Tür bulunamadı.")
@@ -1037,8 +961,8 @@ def uyelik_tur_sil(tur_id: int, user: PanelUserDto = Depends(panel_dogrula), s: 
 
 
 # Panel: Kullanıcılar listesi
-@app.get("/panel/kullanicilar")
-def panel_kullanicilar(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.get("/panel/kullanicilar", dependencies=[Depends(panel_dogrula)])
+def panel_kullanicilar(s: Session = Depends(db)):
     kullanicilar = s.query(Kullanici).order_by(Kullanici.kayit_tar.desc()).all()
     sonuc = []
     for k in kullanicilar:
@@ -1057,8 +981,8 @@ def panel_kullanicilar(user: PanelUserDto = Depends(panel_dogrula), s: Session =
     return sonuc
 
 
-@app.delete("/panel/kullanici-sil/{kullanici_id}")
-def kullanici_sil(kullanici_id: str, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
+@app.delete("/panel/kullanici-sil/{kullanici_id}", dependencies=[Depends(panel_dogrula)])
+def kullanici_sil(kullanici_id: str, s: Session = Depends(db)):
     """Kullanıcıyı ve varsa aktif lisansını siler."""
     k = s.query(Kullanici).filter_by(id=kullanici_id).first()
     if not k:
@@ -1072,136 +996,6 @@ def kullanici_sil(kullanici_id: str, user: PanelUserDto = Depends(panel_dogrula)
     s.delete(k)
     s.commit()
     return {"mesaj": f"{k.ad_soyad} ({k.email}) silindi, aktif lisansları iptal edildi."}
-
-
-# =====================================================================
-# YENİ EKLENEN ENDPOINTLER (YETKİ VE LOG SİSTEMİ)
-# =====================================================================
-
-class GirisIstek(BaseModel):
-    kullanici: str
-    sifre: str
-
-@app.post("/panel/giris")
-def panel_giris_yap(istek: GirisIstek, s: Session = Depends(db)):
-    kadi = istek.kullanici
-    sifre = istek.sifre
-    if kadi == PANEL_KULLANICI and sifre == PANEL_SIFRE:
-        panel_log_yaz(s, kadi, "Giriş Yaptı")
-        return {"basarili": True, "is_admin": True, "kullanici_adi": kadi, "yetkiler": {}}
-        
-    pk = s.query(PanelKullanici).filter_by(kullanici_adi=kadi, sifre_hash=sifre_hashle(sifre)).first()
-    if pk:
-        pk.son_giris = datetime.datetime.utcnow()
-        s.commit()
-        panel_log_yaz(s, kadi, "Giriş Yaptı")
-        yetkiler = {
-            "lisans_olustur": pk.yetki_lisans_olustur,
-            "lisans_sil": pk.yetki_lisans_sil,
-            "hwid_sifirla": pk.yetki_hwid_sifirla,
-            "sure_uzat": pk.yetki_sure_uzat,
-            "talep_onayla": pk.yetki_talep_onayla,
-            "kullanici_ekle": pk.yetki_kullanici_ekle,
-            "mesaj_yaz": pk.yetki_mesaj_yaz,
-        }
-        return {"basarili": True, "is_admin": pk.is_admin, "kullanici_adi": kadi, "yetkiler": yetkiler}
-    raise HTTPException(status_code=401, detail="Panel kullanici adi veya sifresi yanlis.")
-
-
-@app.post("/panel/cikis")
-def panel_cikis_yap(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
-    if not user.is_admin and user.kullanici_adi != PANEL_KULLANICI:
-        pk = s.query(PanelKullanici).filter_by(kullanici_adi=user.kullanici_adi).first()
-        if pk:
-            pk.son_cikis = datetime.datetime.utcnow()
-            s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "Çıkış Yaptı")
-    return {"basarili": True}
-
-
-@app.get("/panel/yetkililer")
-def panel_yetkililer_getir(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Yalnızca admin görebilir.")
-    pk = s.query(PanelKullanici).all()
-    return [{
-        "id": p.id,
-        "kullanici_adi": p.kullanici_adi,
-        "email": p.email,
-        "is_admin": p.is_admin,
-        "son_giris": p.son_giris.strftime("%d.%m.%Y %H:%M") if p.son_giris else "-",
-        "son_cikis": p.son_cikis.strftime("%d.%m.%Y %H:%M") if p.son_cikis else "-",
-        "yetkiler": {
-            "lisans_olustur": p.yetki_lisans_olustur,
-            "lisans_sil": p.yetki_lisans_sil,
-            "hwid_sifirla": p.yetki_hwid_sifirla,
-            "sure_uzat": p.yetki_sure_uzat,
-            "talep_onayla": p.yetki_talep_onayla,
-            "kullanici_ekle": p.yetki_kullanici_ekle,
-            "mesaj_yaz": p.yetki_mesaj_yaz,
-            "ip_ban": p.yetki_ip_ban,
-        }
-    } for p in pk]
-
-
-class YetkiliEkleIstek(BaseModel):
-    kullanici_adi: str
-    email: str
-    sifre: str
-    yetkiler: dict
-
-
-@app.post("/panel/yetkili-ekle")
-def panel_yetkili_ekle(istek: YetkiliEkleIstek, user: PanelUserDto = Depends(yetki_kontrol("kullanici_ekle")), s: Session = Depends(db)):
-    if not istek.kullanici_adi or not istek.email or not istek.sifre:
-        raise HTTPException(status_code=400, detail="Tüm alanlar zorunludur.")
-    mevcut = s.query(PanelKullanici).filter((PanelKullanici.kullanici_adi == istek.kullanici_adi) | (PanelKullanici.email == istek.email)).first()
-    if mevcut:
-        raise HTTPException(status_code=409, detail="Bu kullanıcı adı veya e-posta zaten kullanımda.")
-    
-    y = PanelKullanici(
-        kullanici_adi=istek.kullanici_adi,
-        email=istek.email,
-        sifre_hash=sifre_hashle(istek.sifre),
-        yetki_lisans_olustur=istek.yetkiler.get("lisans_olustur", False),
-        yetki_lisans_sil=istek.yetkiler.get("lisans_sil", False),
-        yetki_hwid_sifirla=istek.yetkiler.get("hwid_sifirla", False),
-        yetki_sure_uzat=istek.yetkiler.get("sure_uzat", False),
-        yetki_talep_onayla=istek.yetkiler.get("talep_onayla", False),
-        yetki_kullanici_ekle=istek.yetkiler.get("kullanici_ekle", False),
-        yetki_mesaj_yaz=istek.yetkiler.get("mesaj_yaz", False),
-        yetki_ip_ban=istek.yetkiler.get("ip_ban", False)
-    )
-    s.add(y)
-    s.commit()
-    panel_log_yaz(s, user.kullanici_adi, "Yetkili Ekledi", f"Kullanıcı: {istek.kullanici_adi}")
-    return {"basarili": True, "mesaj": "Yetkili eklendi."}
-
-
-@app.delete("/panel/yetkili-sil/{yetkili_id}")
-def panel_yetkili_sil(yetkili_id: int, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Yalnızca admin görebilir.")
-    y = s.query(PanelKullanici).filter_by(id=yetkili_id).first()
-    if not y:
-        raise HTTPException(status_code=404, detail="Yetkili bulunamadı.")
-    panel_log_yaz(s, user.kullanici_adi, "Yetkili Sildi", f"Kullanıcı: {y.kullanici_adi}")
-    s.delete(y)
-    s.commit()
-    return {"basarili": True, "mesaj": "Yetkili silindi."}
-
-
-@app.get("/panel/panel-loglari")
-def panel_loglari_getir(user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Yalnızca admin görebilir.")
-    plogs = s.query(PanelLog).order_by(PanelLog.tarih.desc()).limit(200).all()
-    return [{
-        "tarih": pl.tarih.strftime("%d.%m.%Y %H:%M:%S"),
-        "kullanici_adi": pl.kullanici_adi,
-        "islem": pl.islem,
-        "detay": pl.detay or ""
-    } for pl in plogs]
 
 
 # =====================================================================
@@ -1405,7 +1199,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
   <div class="nav-item" onclick="sayfaAc('kullanicilar')" id="nav-kullanicilar">
     <span class="nav-icon">👥</span> Kullanıcılar
   </div>
-  <div class="nav-item yetki-ip-ban" onclick="sayfaAc('ip-banlar')" id="nav-ip-banlar" style="display:none">
+  <div class="nav-item" onclick="sayfaAc('ip-banlar')" id="nav-ip-banlar">
     <span class="nav-icon">🚫</span> IP Ban
   </div>
   <div class="nav-item" onclick="sayfaAc('uyelik-turleri')" id="nav-uyelik-turleri">
@@ -1413,15 +1207,6 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
   </div>
   <div class="nav-item" onclick="sayfaAc('loglar')" id="nav-loglar">
     <span class="nav-icon">📜</span> Loglar
-  </div>
-  <div class="nav-item yetki-admin-only" onclick="sayfaAc('yetkililer')" id="nav-yetkililer" style="display:none">
-    <span class="nav-icon">🛡️</span> Yetkililer
-  </div>
-  <div class="nav-item yetki-admin-only" onclick="sayfaAc('panel-loglari')" id="nav-panel-loglari" style="display:none">
-    <span class="nav-icon">📑</span> Kayıtlar
-  </div>
-  <div class="nav-item" onclick="panelCikis()" style="margin-top:auto;color:#ef4444;border-top:1px solid #2a2d3e;padding-top:14px;">
-    <span class="nav-icon">🚪</span> Çıkış Yap
   </div>
 </div>
 
@@ -1444,7 +1229,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
         </select>
         <input type="number" id="l-saat" placeholder="Deneme süresi (saat)" value="24" min="1" max="8760">
         <textarea id="l-not" placeholder="Not"></textarea>
-        <button class="btn btn-primary yetki-lisans-olustur" onclick="lisansOlustur()">✚ Oluştur</button>
+        <button class="btn btn-primary" onclick="lisansOlustur()">✚ Oluştur</button>
         <div id="l-sonuc" style="margin-top:10px;font-size:13px;color:#4caf50;font-weight:bold;font-family:monospace;"></div>
       </div>
       <div class="card">
@@ -1452,9 +1237,9 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
         <input type="text" id="l-islem-kod" placeholder="Lisans kodu (AYL-XXXX-XXXX-XXXX)">
         <input type="number" id="l-uzat-gun" placeholder="Uzatma (gün)" value="30" min="1">
         <div class="row-btns">
-          <button class="btn btn-danger btn-sm yetki-lisans-sil" onclick="iptalEt()">✖ İptal Et</button>
-          <button class="btn btn-warning btn-sm yetki-hwid-sifirla" onclick="hwIdSifirla()">↺ HWID Sıfırla</button>
-          <button class="btn btn-success btn-sm yetki-sure-uzat" onclick="sureUzat()">+ Süre Uzat</button>
+          <button class="btn btn-danger btn-sm" onclick="iptalEt()">✖ İptal Et</button>
+          <button class="btn btn-warning btn-sm" onclick="hwIdSifirla()">↺ HWID Sıfırla</button>
+          <button class="btn btn-success btn-sm" onclick="sureUzat()">+ Süre Uzat</button>
         </div>
         <div id="l-islem-sonuc" style="margin-top:10px;font-size:13px;"></div>
       </div>
@@ -1629,59 +1414,6 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
     </div>
   </div>
 
-  <!-- Yetkililer -->
-  <div class="page" id="page-yetkililer">
-    <div class="page-title">🛡️ Panel Yetkilileri</div>
-    <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;">
-      <div class="card">
-        <h3>Yeni Yetkili Ekle</h3>
-        <input type="text" id="y-kadi" placeholder="Kullanıcı Adı *">
-        <input type="email" id="y-email" placeholder="E-posta *">
-        <input type="password" id="y-sifre" placeholder="Şifre *">
-        <div style="margin:14px 0;font-size:12px;color:#ccc;display:flex;flex-direction:column;gap:6px;">
-          <label><input type="checkbox" id="cb-lisans_olustur"> Lisans Oluşturabilme</label>
-          <label><input type="checkbox" id="cb-lisans_sil"> Lisans Silebilme / İptal</label>
-          <label><input type="checkbox" id="cb-hwid_sifirla"> HWID Sıfırlama</label>
-          <label><input type="checkbox" id="cb-sure_uzat"> Lisans Süre Uzatma</label>
-          <label><input type="checkbox" id="cb-talep_onayla"> Lisans Taleplerini Onaylama</label>
-          <label><input type="checkbox" id="cb-kullanici_ekle"> Panel Kullanıcısı (Yetkili) Ekleme</label>
-          <label><input type="checkbox" id="cb-mesaj_yaz"> Mesaj Yazabilme</label>
-          <label><input type="checkbox" id="cb-ip_ban"> IP Banlama & Kaldırma</label>
-        </div>
-        <button class="btn btn-primary" onclick="yetkiliEkle()">✚ Ekle</button>
-      </div>
-      <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-          <h3 style="margin:0">Mevcut Yetkililer</h3>
-          <button class="btn btn-ghost btn-sm" onclick="yetkilileriYukle()">↻ Yenile</button>
-        </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Kullanıcı Adı</th><th>E-posta</th><th>Rol</th><th>Yetkiler</th><th>Son Giriş</th><th>Son Çıkış</th><th>İşlem</th></tr></thead>
-            <tbody id="yetkili-tablo"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Kayıtlar (Panel Logları) -->
-  <div class="page" id="page-panel-loglari">
-    <div class="page-title">📑 Panel Kayıtları</div>
-    <div class="card">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <h3 style="margin:0">Yetkili İşlem Geçmişi</h3>
-        <button class="btn btn-ghost btn-sm" onclick="panelLoglariYukle()">↻ Yenile</button>
-      </div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr><th>Tarih</th><th>Yetkili</th><th>İşlem</th><th>Detay</th></tr></thead>
-          <tbody id="panel-log-tablo"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
 </div><!-- /main -->
 
 <!-- Notification -->
@@ -1706,42 +1438,13 @@ function notif(msg, hata = false) {
 let _panelPollTimer = null;
 let _aktifSayfa = "lisanslar";
 
-function arayuzuYetkilendir() {
-  if (window.IS_ADMIN) {
-    document.querySelectorAll(".yetki-admin-only").forEach(el => el.style.display = "");
-  }
-  // Buton yetkileri
-  const y = window.YETKILER || {};
-  const goster = (cls, yetki) => {
-    document.querySelectorAll("." + cls).forEach(el => {
-      if (window.IS_ADMIN || y[yetki]) el.style.display = "";
-      else el.style.display = "none";
-    });
-  };
-  goster("yetki-lisans-olustur", "lisans_olustur");
-  goster("yetki-lisans-sil", "lisans_sil");
-  goster("yetki-hwid-sifirla", "hwid_sifirla");
-  goster("yetki-sure-uzat", "sure_uzat");
-  goster("yetki-ip-ban", "ip_ban");
-  // Talep onayla butonu ve JS içi render kısımlarını ayrıca idare edeceğiz.
-}
-
 function panelGiris() {
   const k = document.getElementById("inp-kullanici").value;
   const s = document.getElementById("inp-sifre").value;
-  fetch("/panel/giris", {
-    method:"POST", 
-    headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({kullanici: k, sifre: s})
-  })
-    .then(r => r.json())
-    .then(d => {
-      if (d.basarili) {
-        TOKEN = k + ":" + s;
-        window.IS_ADMIN = d.is_admin;
-        window.YETKILER = d.yetkiler;
-        arayuzuYetkilendir();
-        
+  TOKEN = k + ":" + s;
+  fetch("/panel/lisanslar", {headers: auth()})
+    .then(r => {
+      if (r.ok) {
         document.getElementById("login-overlay").style.display = "none";
         lisanslariYukle();
         badgeGuncelle();
@@ -1752,17 +1455,9 @@ function panelGiris() {
         }, 15000);
         istatistikYukle();
       } else {
-        document.getElementById("login-hata").textContent = d.detail || "Giriş başarısız.";
+        document.getElementById("login-hata").textContent = "Kullanıcı adı veya şifre yanlış!";
       }
-    }).catch(e => {
-       document.getElementById("login-hata").textContent = "Giriş yapılamadı.";
     });
-}
-
-function panelCikis() {
-  fetch("/panel/cikis", {method:"POST", headers:auth()}).then(()=>{
-    location.reload();
-  });
 }
 
 function panelOtoPoll() {
@@ -1774,8 +1469,6 @@ function panelOtoPoll() {
     "ip-banlar":     ipBanlariYukle,
     "uyelik-turleri": turleriYukle,
     loglar:          logYukle,
-    yetkililer:      yetkilileriYukle,
-    "panel-loglari": panelLoglariYukle,
   };
   if (yukle[_aktifSayfa]) yukle[_aktifSayfa]();
 }
@@ -1795,8 +1488,6 @@ function sayfaAc(sayfa) {
     "ip-banlar":     ipBanlariYukle,
     "uyelik-turleri": turleriYukle,
     loglar:          logYukle,
-    yetkililer:      yetkilileriYukle,
-    "panel-loglari": panelLoglariYukle,
   };
   if (yukle[sayfa]) yukle[sayfa]();
 }
@@ -2211,91 +1902,6 @@ function logYukle() {
     document.getElementById("log-output").innerHTML = logs.map(l =>
       `<span style="color:#555">[${l.tarih}]</span> <span style="color:${renkler[l.islem]||'#aaa'}">${l.islem.toUpperCase().padEnd(12)}</span> <span style="color:#7eb8ff">${l.lisans_kodu}</span> <span style="color:#888">IP:${l.ip}</span> ${l.mesaj}`
     ).join("\n");
-  });
-}
-
-// ===== YETKİLİLER (RBAC) =====
-function yetkilileriYukle() {
-  fetch("/panel/yetkililer", {headers: auth()}).then(r => r.json()).then(liste => {
-    if(liste.detail) {
-        document.getElementById("yetkili-tablo").innerHTML = `<tr><td colspan="7" style="color:#f87171">${liste.detail}</td></tr>`;
-        return;
-    }
-    const yStr = (y) => Object.entries(y).filter(([k,v]) => v).map(([k,v]) => `<span class="badge b-aktif" style="margin:2px">${k.split('_').join(' ')}</span>`).join("") || '<span style="color:#555">Yok</span>';
-    document.getElementById("yetkili-tablo").innerHTML = liste.map(y => `
-      <tr>
-        <td>${y.kullanici_adi}</td>
-        <td>${y.email || "-"}</td>
-        <td><span class="badge ${y.is_admin ? 'b-onay' : 'b-bekl'}">${y.is_admin ? 'Süper Admin' : 'Yetkili'}</span></td>
-        <td style="max-width:200px;line-height:1.8">${y.is_admin ? '<span class="badge b-onay">TÜM YETKİLER</span>' : yStr(y.yetkiler)}</td>
-        <td>${y.son_giris}</td>
-        <td>${y.son_cikis}</td>
-        <td>${!y.is_admin ? `<button class="btn btn-danger btn-sm" onclick="yetkiliSil(${y.id}, '${y.kullanici_adi}')">Sil</button>` : "-"}</td>
-      </tr>`).join("");
-  }).catch(e => {
-      document.getElementById("yetkili-tablo").innerHTML = `<tr><td colspan="7" style="color:#f87171">Yetkiniz yok veya yüklenemedi.</td></tr>`;
-  });
-}
-
-function yetkiliEkle() {
-  const kullanici_adi = document.getElementById("y-kadi").value.trim();
-  const email = document.getElementById("y-email").value.trim();
-  const sifre = document.getElementById("y-sifre").value.trim();
-  const yetkiler = {
-      lisans_olustur: document.getElementById("cb-lisans_olustur").checked,
-      lisans_sil: document.getElementById("cb-lisans_sil").checked,
-      hwid_sifirla: document.getElementById("cb-hwid_sifirla").checked,
-      sure_uzat: document.getElementById("cb-sure_uzat").checked,
-      talep_onayla: document.getElementById("cb-talep_onayla").checked,
-      kullanici_ekle: document.getElementById("cb-kullanici_ekle").checked,
-      mesaj_yaz: document.getElementById("cb-mesaj_yaz").checked,
-      ip_ban: document.getElementById("cb-ip_ban").checked,
-  };
-  
-  if (!kullanici_adi || !email || !sifre) { notif("Tüm alanları doldurun!", true); return; }
-  
-  fetch("/panel/yetkili-ekle", {
-      method:"POST", 
-      headers:auth(), 
-      body:JSON.stringify({kullanici_adi, email, sifre, yetkiler})
-  }).then(r => r.json()).then(d => {
-      if(d.basarili) {
-          notif("Yetkili başarıyla eklendi");
-          document.getElementById("y-kadi").value = "";
-          document.getElementById("y-email").value = "";
-          document.getElementById("y-sifre").value = "";
-          yetkilileriYukle();
-      } else {
-          notif(d.detail || "Eklenemedi", true);
-      }
-  });
-}
-
-function yetkiliSil(id, kadi) {
-  if (!confirm(`${kadi} adlı yetkiliyi silmek istediğinize emin misiniz?`)) return;
-  fetch("/panel/yetkili-sil/" + id, {method:"DELETE", headers:auth()})
-    .then(r => r.json()).then(d => {
-        notif(d.mesaj || d.detail, !d.basarili);
-        yetkilileriYukle();
-    });
-}
-
-// ===== PANEL LOGLARI =====
-function panelLoglariYukle() {
-  fetch("/panel/panel-loglari", {headers: auth()}).then(r => r.json()).then(liste => {
-    if(liste.detail) {
-        document.getElementById("panel-log-tablo").innerHTML = `<tr><td colspan="4" style="color:#f87171">${liste.detail}</td></tr>`;
-        return;
-    }
-    document.getElementById("panel-log-tablo").innerHTML = liste.map(l => `
-      <tr>
-        <td style="color:#888">${l.tarih}</td>
-        <td style="font-weight:600;color:#5b8cff">${l.kullanici_adi}</td>
-        <td><span class="badge b-bekl" style="background:#222540;color:#e0e0e0;border-color:#2a2d3e">${l.islem}</span></td>
-        <td style="color:#aaa">${l.detay}</td>
-      </tr>`).join("");
-  }).catch(e => {
-      document.getElementById("panel-log-tablo").innerHTML = `<tr><td colspan="4" style="color:#f87171">Yetkiniz yok veya yüklenemedi.</td></tr>`;
   });
 }
 
