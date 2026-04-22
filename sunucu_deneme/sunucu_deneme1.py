@@ -522,6 +522,40 @@ def uyelik_turleri_public(s: Session = Depends(db)):
     return [{"kod": t.kod, "ad": t.ad, "aciklama": t.aciklama} for t in turler]
 
 
+@app.get("/api/lisans-gecmisim")
+def lisans_gecmisim(request: Request, s: Session = Depends(db)):
+    """Kullanıcının tüm lisanslarını (aktif + süresi dolan + iptal) döndürür."""
+    kullanici_id = get_kullanici_id(request)
+    if not kullanici_id:
+        raise HTTPException(status_code=401, detail="Giriş gerekli.")
+    k = s.query(Kullanici).filter_by(id=kullanici_id).first()
+    if not k:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+    simdi = datetime.datetime.utcnow()
+    lisanslar = s.query(Lisans).filter_by(musteri_email=k.email).order_by(Lisans.olusturma_tar.desc()).all()
+    sonuc = []
+    for l in lisanslar:
+        if not l.aktif:
+            durum = "iptal"
+        elif l.bitis_tarihi and simdi > l.bitis_tarihi:
+            durum = "suresi_dolmus"
+        else:
+            durum = "aktif"
+        kalan = None
+        if l.bitis_tarihi and durum == "aktif":
+            kalan = max(0, (l.bitis_tarihi - simdi).days)
+        sonuc.append({
+            "kod": l.lisans_kodu,
+            "tur": l.tur,
+            "durum": durum,
+            "olusturma": l.olusturma_tar.strftime("%d.%m.%Y") if l.olusturma_tar else "-",
+            "bitis": l.bitis_tarihi.strftime("%d.%m.%Y") if l.bitis_tarihi else "Ömür Boyu",
+            "kalan_gun": kalan,
+            "aktivasyon": l.aktivasyon_tar.strftime("%d.%m.%Y") if l.aktivasyon_tar else None,
+        })
+    return sonuc
+
+
 # =====================================================================
 # PANEL API (Admin)
 # =====================================================================
@@ -1247,6 +1281,9 @@ function notif(msg, hata = false) {
   setTimeout(() => el.className = "notif" + (hata ? " error" : ""), 2800);
 }
 
+let _panelPollTimer = null;
+let _aktifSayfa = "lisanslar";
+
 function panelGiris() {
   const k = document.getElementById("inp-kullanici").value;
   const s = document.getElementById("inp-sifre").value;
@@ -1257,11 +1294,28 @@ function panelGiris() {
         document.getElementById("login-overlay").style.display = "none";
         lisanslariYukle();
         badgeGuncelle();
-        setInterval(badgeGuncelle, 30000);
+        // Aktif sayfayı 15 saniyede bir otomatik yenile
+        _panelPollTimer = setInterval(() => {
+          panelOtoPoll();
+          badgeGuncelle();
+        }, 15000);
       } else {
         document.getElementById("login-hata").textContent = "Kullanıcı adı veya şifre yanlış!";
       }
     });
+}
+
+function panelOtoPoll() {
+  const yukle = {
+    lisanslar:       lisanslariYukle,
+    talepler:        taleplerYukle,
+    mesajlar:        mesajlariYukle,
+    kullanicilar:    kullanicilariYukle,
+    "ip-banlar":     ipBanlariYukle,
+    "uyelik-turleri": turleriYukle,
+    loglar:          logYukle,
+  };
+  if (yukle[_aktifSayfa]) yukle[_aktifSayfa]();
 }
 
 function sayfaAc(sayfa) {
@@ -1269,15 +1323,16 @@ function sayfaAc(sayfa) {
   document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
   document.getElementById("page-" + sayfa).classList.add("active");
   document.getElementById("nav-" + sayfa).classList.add("active");
+  _aktifSayfa = sayfa;
 
   const yukle = {
-    lisanslar: lisanslariYukle,
-    talepler: taleplerYukle,
-    mesajlar: mesajlariYukle,
-    kullanicilar: kullanicilariYukle,
-    "ip-banlar": ipBanlariYukle,
+    lisanslar:       lisanslariYukle,
+    talepler:        taleplerYukle,
+    mesajlar:        mesajlariYukle,
+    kullanicilar:    kullanicilariYukle,
+    "ip-banlar":     ipBanlariYukle,
     "uyelik-turleri": turleriYukle,
-    loglar: logYukle,
+    loglar:          logYukle,
   };
   if (yukle[sayfa]) yukle[sayfa]();
 }
@@ -1427,47 +1482,79 @@ function mesajlariYukle() {
   });
 }
 
+let _konusmaPollTimer = null;
+
 function konusmaSec(kullaniciId) {
   secilenKullaniciId = kullaniciId;
   mesajlariYukle();
+  // Önceki konuşma poll'unu temizle
+  if (_konusmaPollTimer) { clearInterval(_konusmaPollTimer); _konusmaPollTimer = null; }
+  _konusmaMesajYukle(kullaniciId);
+  // Açık konuşmayı 5 saniyede bir canlı güncelle
+  _konusmaPollTimer = setInterval(() => {
+    if (secilenKullaniciId === kullaniciId) _konusmaMesajYukle(kullaniciId);
+    else { clearInterval(_konusmaPollTimer); _konusmaPollTimer = null; }
+  }, 5000);
+}
+
+function _konusmaMesajYukle(kullaniciId) {
   fetch("/panel/kullanici-mesajlar/" + kullaniciId, {headers: auth()}).then(r => r.json()).then(d => {
     const right = document.getElementById("msg-right");
+    // Eğer kullanıcı mesaj kutusuna yazıyorsa sadece mesaj listesini güncelle
+    const inputMevcut = document.getElementById("admin-msg-inp");
+    const inputDeger = inputMevcut ? inputMevcut.value : null;
+
     const k = d.kullanici;
     const l = d.lisans;
     const lisansBilgi = l ?
       `<span class="badge b-aktif" style="margin-right:4px;">${l.tur}</span> ${l.kod} — ${l.bitis||"Ömür Boyu"}${l.kalan_gun != null ? ` (${l.kalan_gun} gün)` : ""}` :
       `<span class="badge b-pasif">Lisans Yok</span>`;
 
-    right.innerHTML = `
-      <div class="msg-right-header">
-        <div style="font-size:15px;font-weight:700;color:#e0e0e0;margin-bottom:8px;">${k.ad_soyad}</div>
-        <div class="user-detail">
-          <div class="row">
-            <div class="field"><label>E-posta</label><span>${k.email}</span></div>
-            <div class="field"><label>Son IP</label><span><code>${k.son_ip||"?"}</code></span></div>
-            <div class="field"><label>Kayıt Tarihi</label><span>${k.kayit_tar}</span></div>
-            <div class="field"><label>Lisans</label><span>${lisansBilgi}</span></div>
+    const mesajlerHtml = d.mesajlar.map(m => `
+      <div class="msg-sender ${m.gonderen==='admin'?'right':''}">
+        <div class="msg-bubble ${m.gonderen}">${m.icerik}</div>
+        <div class="msg-time">${m.gonderen==='admin'?'Siz':'Kullanıcı'} · ${m.tarih}</div>
+      </div>`).join("");
+
+    if (inputMevcut) {
+      // Sadece mesaj listesini güncelle, input ve header dokunma
+      const mesajEl = document.getElementById("aktif-mesajlar");
+      if (mesajEl) {
+        const eskiScroll = mesajEl.scrollHeight - mesajEl.scrollTop;
+        mesajEl.innerHTML = mesajlerHtml;
+        // Kullanıcı en alttaysa otomatik kaydır
+        if (eskiScroll <= mesajEl.clientHeight + 40) mesajEl.scrollTop = mesajEl.scrollHeight;
+      }
+      // Input değerini koru
+      const inp = document.getElementById("admin-msg-inp");
+      if (inp && inputDeger !== null) inp.value = inputDeger;
+    } else {
+      right.innerHTML = `
+        <div class="msg-right-header">
+          <div style="font-size:15px;font-weight:700;color:#e0e0e0;margin-bottom:8px;">${k.ad_soyad}</div>
+          <div class="user-detail">
+            <div class="row">
+              <div class="field"><label>E-posta</label><span>${k.email}</span></div>
+              <div class="field"><label>Son IP</label><span><code>${k.son_ip||"?"}</code></span></div>
+              <div class="field"><label>Kayıt Tarihi</label><span>${k.kayit_tar}</span></div>
+              <div class="field"><label>Lisans</label><span>${lisansBilgi}</span></div>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="msg-right-body" id="aktif-mesajlar">
-        ${d.mesajlar.map(m => `
-          <div class="msg-sender ${m.gonderen==='admin'?'right':''}">
-            <div class="msg-bubble ${m.gonderen}">${m.icerik}</div>
-            <div class="msg-time">${m.gonderen==='admin'?'Siz':'Kullanıcı'} · ${m.tarih}</div>
-          </div>`).join("")}
-      </div>
-      <div class="msg-right-footer">
-        <textarea id="admin-msg-inp" placeholder="Mesajınızı yazın…" onkeydown="if(event.ctrlKey&&event.key==='Enter')adminMesajGonder()"></textarea>
-        <div style="display:flex;flex-direction:column;gap:6px;">
-          <button class="btn btn-primary btn-sm" onclick="adminMesajGonder()">Gönder</button>
+        <div class="msg-right-body" id="aktif-mesajlar">
+          ${mesajlerHtml}
         </div>
-      </div>`;
-    // Scroll to bottom
-    setTimeout(() => {
-      const el = document.getElementById("aktif-mesajlar");
-      if (el) el.scrollTop = el.scrollHeight;
-    }, 50);
+        <div class="msg-right-footer">
+          <textarea id="admin-msg-inp" placeholder="Mesajınızı yazın…" onkeydown="if(event.ctrlKey&&event.key==='Enter')adminMesajGonder()"></textarea>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <button class="btn btn-primary btn-sm" onclick="adminMesajGonder()">Gönder</button>
+          </div>
+        </div>`;
+      setTimeout(() => {
+        const el = document.getElementById("aktif-mesajlar");
+        if (el) el.scrollTop = el.scrollHeight;
+      }, 50);
+    }
   });
 }
 
@@ -1475,12 +1562,14 @@ function adminMesajGonder() {
   if (!secilenKullaniciId) return;
   const icerik = document.getElementById("admin-msg-inp").value.trim();
   if (!icerik) return;
+  document.getElementById("admin-msg-inp").value = "";
   fetch("/panel/admin-mesaj-gonder", {method:"POST", headers:auth(), body:JSON.stringify({
     kullanici_id: secilenKullaniciId,
     icerik: icerik,
   })}).then(r => r.json()).then(() => {
     notif("Mesaj gönderildi");
-    konusmaSec(secilenKullaniciId);
+    _konusmaMesajYukle(secilenKullaniciId);
+    mesajlariYukle();
   });
 }
 
@@ -1833,6 +1922,7 @@ SITE_HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="form-title">Giriş Yap</div>
       <div class="form-sub">Hesabınız yok mu? <a onclick="sayfaGoster('kayit')">Kayıt olun</a></div>
       <div class="form-err" id="giris-hata"></div>
+      <div class="form-ok" id="giris-ok"></div>
       <div class="form-group">
         <label class="form-label">E-posta</label>
         <input class="form-input" type="email" id="g-email" placeholder="ornek@email.com">
@@ -1863,6 +1953,15 @@ SITE_HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="dash-card full" id="talep-section">
       <h3>Lisans Talebi</h3>
       <div id="talep-icerik"></div>
+    </div>
+
+    <!-- Lisans Geçmişi -->
+    <div class="dash-card full" id="gecmis-section">
+      <h3 style="display:flex;align-items:center;justify-content:space-between;">
+        <span>📋 Lisans Geçmişi</span>
+        <button onclick="lisansGecmisiniYukle()" style="background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;">↻ Yenile</button>
+      </h3>
+      <div id="gecmis-icerik"><div style="color:var(--muted);font-size:13px;">Yükleniyor…</div></div>
     </div>
 
     <!-- Mesajlar -->
@@ -1914,13 +2013,39 @@ async function kayitOl() {
   const email = document.getElementById("r-email").value.trim();
   const sifre = document.getElementById("r-sifre").value;
   mesajGizle("kayit-hata"); mesajGizle("kayit-ok");
+
+  if (!ad || !email || !sifre) {
+    mesajGoster("kayit-hata", "⚠️ Tüm alanları doldurun.");
+    return;
+  }
+
+  // Butonu devre dışı bırak
+  const btn = document.querySelector("#sayfa-kayit .form-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Kayıt yapılıyor…"; }
+
   const r = await fetch("/api/kayit", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({ad_soyad: ad, email, sifre})});
   const d = await r.json();
+
+  if (btn) { btn.disabled = false; btn.textContent = "Hesap Oluştur"; }
+
   if (r.ok) {
-    mesajGoster("kayit-ok", "✅ " + d.mesaj);
+    // Geri sayımlı yönlendirme
+    let saniye = 3;
+    mesajGoster("kayit-ok", `✅ Kayıt başarılı! Giriş sayfasına yönlendiriliyorsunuz (${saniye})…`);
+    const sayac = setInterval(() => {
+      saniye--;
+      if (saniye <= 0) {
+        clearInterval(sayac);
+        mesajGizle("kayit-ok");
+        sayfaGoster("giris");
+      } else {
+        mesajGoster("kayit-ok", `✅ Kayıt başarılı! Giriş sayfasına yönlendiriliyorsunuz (${saniye})…`);
+      }
+    }, 1000);
   } else {
-    mesajGoster("kayit-hata", d.detail || "Bir hata oluştu.");
+    const hata = d.detail || "Bir hata oluştu.";
+    mesajGoster("kayit-hata", "❌ " + hata);
   }
 }
 
@@ -1928,15 +2053,41 @@ async function kayitOl() {
 async function girisYap() {
   const email = document.getElementById("g-email").value.trim();
   const sifre = document.getElementById("g-sifre").value;
-  mesajGizle("giris-hata");
+  mesajGizle("giris-hata"); mesajGizle("giris-ok");
+
+  if (!email || !sifre) {
+    mesajGoster("giris-hata", "⚠️ Lütfen e-posta ve şifrenizi girin.");
+    return;
+  }
+
+  const btn = document.querySelector("#sayfa-giris .form-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Giriş yapılıyor…"; }
+
   const r = await fetch("/api/giris", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({email, sifre})});
   const d = await r.json();
+
+  if (btn) { btn.disabled = false; btn.textContent = "Giriş Yap"; }
+
   if (r.ok) {
-    sayfaGoster("dashboard");
-    document.getElementById("nav-links").innerHTML = `<button class="nav-btn nav-btn-ghost" onclick="cikisYap()">Çıkış</button>`;
+    mesajGoster("giris-ok", "✅ Giriş başarılı! Yönlendiriliyorsunuz…");
+    setTimeout(() => {
+      mesajGizle("giris-ok");
+      sayfaGoster("dashboard");
+      dashboardYukle();
+    }, 1200);
   } else {
-    mesajGoster("giris-hata", d.detail || "Giriş başarısız.");
+    // Kullanıcı dostu hata mesajları
+    let hata = d.detail || "";
+    if (!hata || hata.toLowerCase().includes("e-posta") || hata.toLowerCase().includes("sifre") || hata.toLowerCase().includes("şifre") || r.status === 401) {
+      hata = "❌ E-posta adresi veya şifre yanlış. Lütfen tekrar deneyin.";
+    } else {
+      hata = "❌ " + hata;
+    }
+    mesajGoster("giris-hata", hata);
+    // Yanlış girişte şifre alanını temizle ve odaklan
+    document.getElementById("g-sifre").value = "";
+    document.getElementById("g-sifre").focus();
   }
 }
 
@@ -1994,8 +2145,53 @@ async function dashboardYukle() {
 
   // Talepler
   taleplerYukle();
+  // Lisans geçmişi
+  lisansGecmisiniYukle();
   // Mesajlar
   mesajlariYukle();
+}
+
+// Dashboard'daki lisans kartını sessizce güncelle (lisans durumu değişirse yeniden çizer)
+async function lisansKartiGuncelle() {
+  const r = await fetch("/api/profil");
+  if (!r.ok) return;
+  const p = await r.json();
+  const grid = document.getElementById("dash-grid");
+  if (!grid) return;
+  if (p.lisans) {
+    grid.innerHTML = `
+      <div class="dash-card">
+        <h3>Lisans Durumu</h3>
+        <span class="status-badge status-active">● Aktif</span>
+        <div class="dash-sub" style="margin-top:8px;">${p.lisans.tur}</div>
+      </div>
+      <div class="dash-card">
+        <h3>Kalan Süre</h3>
+        <div class="dash-val">${p.lisans.kalan_gun != null ? p.lisans.kalan_gun + " gün" : "Ömür Boyu"}</div>
+        <div class="dash-sub">Bitiş: ${p.lisans.bitis}</div>
+      </div>
+      <div class="dash-card full">
+        <h3>Lisans Kodunuz</h3>
+        <div class="license-box">
+          <div class="license-code">${p.lisans.kod}</div>
+          <div class="license-sub">Bu kodu program aktivasyonunda kullanın</div>
+        </div>
+      </div>
+      <div class="dash-card full" style="text-align:center;">
+        <h3>Program İndir</h3>
+        <div class="dash-sub" style="margin-bottom:16px;">Lisansınız aktif. Programı indirip lisans kodunuzla aktive edebilirsiniz.</div>
+        <a href="${p.indirme_linki}" target="_blank" style="display:inline-flex;align-items:center;gap:10px;background:linear-gradient(135deg,var(--success),#16a34a);color:white;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:700;text-decoration:none;box-shadow:0 0 24px #22c55e33;transition:all 0.2s;" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 0 40px #22c55e55'" onmouseout="this.style.transform='';this.style.boxShadow='0 0 24px #22c55e33'">
+          ⬇ OPC Gateway'i İndir
+        </a>
+      </div>`;
+  } else {
+    grid.innerHTML = `
+      <div class="dash-card full">
+        <h3>Lisans Durumu</h3>
+        <span class="status-badge status-none">● Lisans Yok</span>
+        <div class="dash-sub" style="margin-top:8px;">Аşağıdan lisans talebinde bulunabilirsiniz.</div>
+      </div>`;
+  }
 }
 
 async function taleplerYukle() {
@@ -2057,16 +2253,66 @@ async function talepGonder() {
   }
 }
 
+async function lisansGecmisiniYukle() {
+  const r = await fetch("/api/lisans-gecmisim");
+  if (!r.ok) return;
+  const liste = await r.json();
+  const el = document.getElementById("gecmis-icerik");
+  if (!liste.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;">Henüz lisans kaydı yok.</div>';
+    return;
+  }
+  const durumBilgi = {
+    aktif:          { cls: 'b-onay',  yazi: '✓ Aktif' },
+    suresi_dolmus:  { cls: 'b-red',   yazi: '✗ Süresi Doldu' },
+    iptal:          { cls: 'b-red',   yazi: '✗ İptal Edildi' },
+  };
+  const turIkon = { aylik: '🗓', yillik: '📅', omur_boyu: '♾', deneme: '🔬' };
+  el.innerHTML = `<div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+          <th style="padding:8px 12px;text-align:left;">Lisans Kodu</th>
+          <th style="padding:8px 12px;text-align:left;">Tür</th>
+          <th style="padding:8px 12px;text-align:left;">Durum</th>
+          <th style="padding:8px 12px;text-align:left;">Oluşturulma</th>
+          <th style="padding:8px 12px;text-align:left;">Bitiş</th>
+          <th style="padding:8px 12px;text-align:left;">Aktivasyon</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${liste.map(l => {
+          const d = durumBilgi[l.durum] || { cls: '', yazi: l.durum };
+          const ikon = turIkon[l.tur] || '🔑';
+          const kalanTxt = l.kalan_gun != null ? ` · ${l.kalan_gun} gün kaldı` : '';
+          return `<tr style="border-top:1px solid var(--border);">
+            <td style="padding:10px 12px;"><code style="font-family:monospace;font-size:12px;background:var(--bg);padding:3px 8px;border-radius:4px;color:#7eb8ff;">${l.kod}</code></td>
+            <td style="padding:10px 12px;">${ikon} ${l.tur.replace('_',' ')}</td>
+            <td style="padding:10px 12px;"><span class="badge-sm ${d.cls}" style="white-space:nowrap;">${d.yazi}${kalanTxt}</span></td>
+            <td style="padding:10px 12px;color:var(--muted);">${l.olusturma}</td>
+            <td style="padding:10px 12px;color:${l.durum==='suresi_dolmus'?'#f87171':'var(--muted)'}">${l.bitis}</td>
+            <td style="padding:10px 12px;color:var(--muted);">${l.aktivasyon || '—'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
 async function mesajlariYukle() {
   const r = await fetch("/api/mesajlarim");
+  if (!r.ok) return;
   const mesajlar = await r.json();
   const el = document.getElementById("msg-area");
+  if (!el) return;
+  // Kullanıcı en alttaysa otomatik kaydır; yazarken konumunu koruma
+  const altaYakin = (el.scrollHeight - el.scrollTop) <= (el.clientHeight + 60);
   el.innerHTML = mesajlar.map(m => `
     <div class="msg-wrap ${m.gonderen==='kullanici'?'right':''}">
       <div class="msg-b ${m.gonderen==='kullanici'?'benim':'admin'}">${m.icerik}</div>
       <div class="msg-t">${m.gonderen==='kullanici'?'Siz':'Destek'} · ${m.tarih}</div>
     </div>`).join("");
-  el.scrollTop = el.scrollHeight;
+  if (altaYakin) el.scrollTop = el.scrollHeight;
 }
 
 async function mesajGonder() {
@@ -2083,7 +2329,7 @@ async function mesajGonder() {
 // ===== YARDIMCI =====
 function mesajGoster(id, txt) {
   const el = document.getElementById(id);
-  if (el) { el.textContent = txt; el.style.display = ""; }
+  if (el) { el.textContent = txt; el.style.display = "block"; }
 }
 function mesajGizle(id) {
   const el = document.getElementById(id);
@@ -2091,11 +2337,23 @@ function mesajGizle(id) {
 }
 
 // Sayfa yüklenince oturum kontrolü
+let _sitePollTimer = null;
 (async function() {
   const r = await fetch("/api/profil");
   if (r.ok) {
     sayfaGoster("dashboard");
-    document.getElementById("nav-links").innerHTML = `<button class="nav-btn nav-btn-ghost" onclick="cikisYap()">Çıkış</button>`;
+    const p = await r.json();
+    document.getElementById("nav-links").innerHTML = `<span style="font-size:13px;color:var(--muted);margin-right:8px;">${p.email}</span><button class="nav-btn nav-btn-ghost" onclick="cikisYap()">Cıkış</button>`;
+    // 20 saniyede bir sessizce yenile
+    _sitePollTimer = setInterval(async () => {
+      const isDash = document.getElementById("sayfa-dashboard") &&
+                     document.getElementById("sayfa-dashboard").style.display !== "none";
+      if (!isDash) return;
+      lisansKartiGuncelle();
+      taleplerYukle();
+      lisansGecmisiniYukle();
+      mesajlariYukle();
+    }, 20000);
   }
 })();
 </script>
