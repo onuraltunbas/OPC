@@ -43,6 +43,8 @@ SECRET_KEY      = os.getenv("SECRET_KEY", "BURAYA-GIZLI-ANAHTARINIZI-YAZIN")
 PANEL_KULLANICI = os.getenv("PANEL_KULLANICI", "admin")          # Panel kullanıcı adı
 PANEL_SIFRE     = os.getenv("PANEL_SIFRE", "admin123")           # Panel şifresi
 DATABASE_URL    = os.getenv("DATABASE_URL", "sqlite:///./lisanslar.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # İndirme linki (Railway env var)
 INDIRME_LINKI   = os.getenv("INDIRME_LINKI", "https://your-download-link.com")
@@ -618,6 +620,23 @@ def profil(request: Request, s: Session = Depends(db)):
         "okunmamis_mesaj": okunmamis,
         "indirme_linki": INDIRME_LINKI if (lisans_bilgi and lisans_bilgi["durum"] == "aktif") else None,
     }
+
+
+@app.post("/api/sifre-degistir")
+async def sifre_degistir_api(request: Request, s: Session = Depends(db)):
+    kullanici_id = get_kullanici_id(request)
+    if not kullanici_id:
+        raise HTTPException(status_code=401, detail="Giriş gerekli.")
+    data = await request.json()
+    ys = data.get("yeni_sifre", "").strip()
+    if len(ys) < 6:
+        raise HTTPException(status_code=400, detail="Şifre en az 6 karakter olmalı.")
+    k = s.query(Kullanici).filter_by(id=kullanici_id).first()
+    if not k:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+    k.sifre_hash = sifre_hashle(ys)
+    s.commit()
+    return {"basarili": True}
 
 
 @app.get("/api/uyelik-turleri-public")
@@ -2708,6 +2727,15 @@ SITE_HTML_TEMPLATE = """<!DOCTYPE html>
       <textarea class="msg-input" id="msg-yaz" placeholder="Mesajınızı yazın… (Ctrl+Enter ile gönder)" onkeydown="if(event.ctrlKey&&event.key==='Enter')mesajGonder()"></textarea>
       <button class="form-btn" style="margin-top:8px;padding:10px;" onclick="mesajGonder()">Gönder</button>
     </div>
+
+    <!-- Şifre Değiştirme -->
+    <div style="margin-top:32px; padding-top:16px; border-top:1px solid var(--border); text-align:center;">
+      <div style="display:flex; justify-content:center; align-items:center; gap:8px;">
+        <input type="password" id="k-yeni-sifre" placeholder="Yeni şifreniz (en az 6 karakter)" style="background:transparent; border:1px solid var(--border); border-radius:6px; padding:6px 12px; font-size:12px; color:var(--text); width:200px;">
+        <button onclick="kullaniciSifreDegistir()" style="background:transparent; border:1px solid var(--border); color:var(--muted); padding:6px 12px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:600;">Şifremi Değiştir</button>
+      </div>
+      <div style="font-size:10px; color:var(--muted); margin-top:6px;">Hesabınızın şifresini eski şifrenizi girmeden hızlıca değiştirebilirsiniz.</div>
+    </div>
   </div>
 </div>
 
@@ -2852,7 +2880,26 @@ async function girisYap() {
   }
 }
 
-// ===== ÇIKIŞ =====
+// ===== ÇIKIŞ & AYARLAR =====
+async function kullaniciSifreDegistir() {
+  const ys = document.getElementById("k-yeni-sifre").value.trim();
+  if (!ys || ys.length < 6) { alert("Şifre en az 6 karakter olmalıdır."); return; }
+  if (!confirm("Şifrenizi değiştirmek istediğinize emin misiniz?")) return;
+  try {
+    const r = await fetch("/api/sifre-degistir", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({yeni_sifre: ys})
+    });
+    if (r.ok) {
+      alert("Şifreniz başarıyla değiştirildi.");
+      document.getElementById("k-yeni-sifre").value = "";
+    } else {
+      const d = await r.json();
+      alert("Hata: " + (d.detail || "İşlem başarısız."));
+    }
+  } catch(e) { alert("Sunucuyla iletişim kurulamadı."); }
+}
+
 async function cikisYap() {
   await fetch("/api/cikis", {method:"POST"});
   location.reload();
