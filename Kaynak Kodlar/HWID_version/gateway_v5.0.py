@@ -1029,6 +1029,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
 # =====================================================================
 def uygulamayi_baslat():
     app = QtWidgets.QApplication(sys.argv)
+    app.setWindowIcon(QIcon("logo.ico"))
     app.setStyle("Fusion")
 
     ly = LisansYoneticisi()

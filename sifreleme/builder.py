@@ -72,6 +72,7 @@ if __name__ == "__main__":
     pyinstaller_cmd = [
         "pyinstaller", "--onefile", "--noconsole",
         "--noupx", "--name=" + output_name,
+        "--icon=logo.ico",
         "--hidden-import=OpenOPC", "--hidden-import=pywin32", "--hidden-import=cryptography",
         "temp_loader.py"
     ]
