@@ -6,7 +6,7 @@ import marshal
 from cryptography.fernet import Fernet
 
 # 1. AYARLAR VE ÖZEL ALFABE
-CUSTOM_ALPHABET = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ汉字龙书Ω∑∞∫≈≠≤≥★♦♣♠♥♩♪♫♬♔♕♖♗♘♙"
+CUSTOM_ALPHABET = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ汉字龙书Ω∑∞∫≈≠≤≥★♦♣♠♥♩♪♫♬♔♕♖♗♘♙♚♛♜♝♞"
 BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 def custom_encode(data: bytes) -> str:
@@ -14,7 +14,8 @@ def custom_encode(data: bytes) -> str:
     return b64.translate(str.maketrans(BASE64_ALPHABET, CUSTOM_ALPHABET))
 
 def build_simple_fortress():
-    target_py = "gateway_v5.0.py"
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    target_py = os.path.join(current_dir, '..', 'Kaynak Kodlar', 'HWID_version', 'gateway_v5.0.py')
     output_name = "OPC_Gateway_Pro"
     
     if not os.path.exists(target_py):
@@ -64,24 +65,32 @@ if __name__ == "__main__":
     run()
 """
 
-    with open("temp_loader.py", "w", encoding="utf-8") as f:
+    temp_loader_path = os.path.join(current_dir, "temp_loader.py")
+    with open(temp_loader_path, "w", encoding="utf-8") as f:
         f.write(loader_code)
 
     # 4. PYINSTALLER İLE EXE YAPMA
     print("[*] EXE derleniyor...")
+    logo_path = os.path.join(current_dir, "logo.ico")
+    ver_path = os.path.join(current_dir, "ver.txt")
+    manifest_path = os.path.join(current_dir, "app.manifest")
+    
     pyinstaller_cmd = [
         "pyinstaller", "--onefile", "--noconsole",
         "--noupx", "--name=" + output_name,
-        "--icon=logo.ico",
+        f"--icon={logo_path}",
+        f"--version-file={ver_path}",
+        f"--manifest={manifest_path}",
         "--hidden-import=OpenOPC", "--hidden-import=pywin32", "--hidden-import=cryptography",
-        "temp_loader.py"
+        temp_loader_path
     ]
     
-    subprocess.run(pyinstaller_cmd, shell=True)
+    # Derleme işlemini de sifreleme dizininde yapması için cwd ayarlıyoruz
+    subprocess.run(pyinstaller_cmd, shell=True, cwd=current_dir)
     
     # Temizlik
-    if os.path.exists("temp_loader.py"): os.remove("temp_loader.py")
-    print(f"\\n✅ BİTTİ! dist/{output_name}.exe hazır. İstediğin kişiye yollayabilirsin.")
+    if os.path.exists(temp_loader_path): os.remove(temp_loader_path)
+    print(f"\\n[+] BITTI! sifreleme/dist/{output_name}.exe hazir. Istedigin kisiye yollayabilirsin.")
 
 if __name__ == "__main__":
     build_simple_fortress()
