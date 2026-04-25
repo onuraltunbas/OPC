@@ -22,6 +22,7 @@ import os
 import uuid
 import secrets
 import datetime
+import hmac
 from typing import Optional, List
 from functools import wraps
 
@@ -48,6 +49,12 @@ if DATABASE_URL.startswith("postgres://"):
 
 # İndirme linki (Railway env var)
 INDIRME_LINKI   = os.getenv("INDIRME_LINKI", "https://your-download-link.com")
+
+# Offline lisans için gömülü anahtar (gateway_v5.0.py ile BİREBİR aynı)
+_SK_P1 = bytes([0x4f, 0x50, 0x43, 0x5f, 0x47, 0x57, 0x5f, 0x4f])
+_SK_P2 = bytes([0x46, 0x46, 0x4c, 0x49, 0x4e, 0x45, 0x5f, 0x4b])
+_SK_P3 = hashlib.sha256(b"opcgw_offline_2026_salt_v1").digest()[:16]
+OFFLINE_SECRET_KEY = _SK_P1 + _SK_P2 + _SK_P3
 
 # =====================================================================
 # VERİTABANI
@@ -158,7 +165,7 @@ class PanelKullanici(Base):
     email = Column(String, unique=True, nullable=True)
     sifre_hash = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
-    
+
     yetki_lisans_olustur = Column(Boolean, default=False)
     yetki_lisans_sil = Column(Boolean, default=False)
     yetki_hwid_sifirla = Column(Boolean, default=False)
@@ -168,6 +175,7 @@ class PanelKullanici(Base):
     yetki_mesaj_yaz = Column(Boolean, default=False)
     yetki_ip_ban = Column(Boolean, default=False)
     yetki_uyelik_tur = Column(Boolean, default=False)
+    yetki_offline_lisans = Column(Boolean, default=False)  # Offline lisans üretme yetkisi
 
     son_giris = Column(DateTime, nullable=True)
     son_cikis = Column(DateTime, nullable=True)
@@ -191,7 +199,35 @@ class Ayarlar(Base):
     admin_sifre_hash = Column(String, nullable=True)
 
 
+class OfflineLisansAyarlari(Base):
+    """Çevrimdışı lisans üretici ayarları"""
+    __tablename__ = "offline_lisans_ayarlari"
+    id = Column(Integer, primary_key=True)
+    # Gelecekte eklenecek alanlar için yer tutucu
+    # (etiket limiti kaldırıldı — tüm yetki seviyeleri limitsiz)
+    notlar = Column(Text, nullable=True)
+
+
 Base.metadata.create_all(engine)
+
+
+# SQLite için mevcut tabloya yeni sütun ekle (ALTER TABLE)
+def _db_migrate():
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    with engine.connect() as conn:
+        try:
+            conn.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE panel_kullanicilari "
+                    "ADD COLUMN yetki_offline_lisans BOOLEAN DEFAULT 0"
+                )
+            )
+            conn.commit()
+        except Exception:
+            pass  # Sütun zaten varsa hata yoksay
+
+_db_migrate()
 
 
 # Varsayılan üyelik türlerini ekle
@@ -356,6 +392,7 @@ def panel_dogrula(request: Request, s: Session = Depends(db)):
                     "mesaj_yaz": pk.yetki_mesaj_yaz,
                     "ip_ban": pk.yetki_ip_ban,
                     "uyelik_tur": pk.yetki_uyelik_tur,
+                    "offline_lisans": pk.yetki_offline_lisans,
                 }
                 return PanelUserDto(kadi, pk.is_admin, yetkiler, isim_soyad=pk.isim_soyad)
     raise HTTPException(status_code=401, detail="Panel kullanici adi veya sifresi yanlis.")
@@ -1149,6 +1186,7 @@ def panel_giris_yap(istek: GirisIstek, s: Session = Depends(db)):
             "mesaj_yaz": pk.yetki_mesaj_yaz,
             "ip_ban": pk.yetki_ip_ban,
             "uyelik_tur": pk.yetki_uyelik_tur,
+            "offline_lisans": pk.yetki_offline_lisans,
         }
         return {"basarili": True, "is_admin": pk.is_admin, "kullanici_adi": kadi, "isim_soyad": pk.isim_soyad, "yetkiler": yetkiler}
     raise HTTPException(status_code=401, detail="Panel kullanici adi veya sifresi yanlis.")
@@ -1263,17 +1301,103 @@ class AdminGuncelleIstek(BaseModel):
 def admin_guncelle(istek: AdminGuncelleIstek, user: PanelUserDto = Depends(panel_dogrula), s: Session = Depends(db)):
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Yalnızca ana admin değiştirebilir.")
-    
+
     ayar = s.query(Ayarlar).first()
     if not ayar:
         ayar = Ayarlar()
         s.add(ayar)
-    
+
     ayar.admin_kullanici = istek.yeni_kullanici
     ayar.admin_sifre_hash = sifre_hashle(istek.yeni_sifre)
     s.commit()
     panel_log_yaz(s, user.kullanici_adi, "Admin Bilgilerini Değiştirdi")
     return {"basarili": True, "mesaj": "Admin bilgileri güncellendi. Lütfen tekrar giriş yapın."}
+
+
+# =====================================================================
+# OFFLİNE LİSANS ÜRETİCİ ENDPOİNT'LERİ
+# =====================================================================
+
+class OfflineLisansIstek(BaseModel):
+    istek_kodu: str     # REQ-XXXXXXXXXXXXXXXXXXXX
+    sure_gun:   int     # 1 – 365
+    yetki:      str     # FULL | READ | DEMO
+
+
+@app.post("/panel/offline-lisans-uret")
+def offline_lisans_uret(
+    istek: OfflineLisansIstek,
+    user: PanelUserDto = Depends(yetki_kontrol("offline_lisans")),
+    s: Session = Depends(db)
+):
+    """
+    Verilen İstek Kodu (REQ-...) için HMAC-SHA256 imzalı aktivasyon kodu üretir.
+    Format: ACT-{SURE}D-{YETKI}-{IMZA}
+    """
+    # Doğrulama
+    if not istek.istek_kodu.startswith("REQ-"):
+        raise HTTPException(status_code=400, detail="Geçersiz istek kodu formatı (REQ- ile başlamalı).")
+    if not (1 <= istek.sure_gun <= 365):
+        raise HTTPException(status_code=400, detail="Süre 1-365 gün arasında olmalı.")
+    if istek.yetki not in ("FULL", "READ", "DEMO"):
+        raise HTTPException(status_code=400, detail="Geçersiz yetki seviyesi. (FULL / READ / DEMO)")
+
+    # HMAC-SHA256 imza — gateway ile aynı algoritma
+    mesaj   = f"{istek.istek_kodu}|{istek.sure_gun}|{istek.yetki}".encode("utf-8")
+    imza    = hmac.new(OFFLINE_SECRET_KEY, mesaj, hashlib.sha256).hexdigest()[:16].upper()
+    akt_kod = f"ACT-{istek.sure_gun}D-{istek.yetki}-{imza}"
+
+    # Audit log
+    detay = (
+        f"Kullanıcı [{user.kullanici_adi}] "
+        f"[{istek.istek_kodu}] kodu için "
+        f"[{istek.sure_gun} Günlük] [{istek.yetki}] offline lisans üretti."
+    )
+    panel_log_yaz(s, user.kullanici_adi, "Offline Lisans Üretti", detay)
+    log_yaz(s, "offline_uret", akt_kod, istek.istek_kodu, "panel", detay)
+
+    return {
+        "basarili": True,
+        "aktivasyon_kodu": akt_kod,
+        "istek_kodu": istek.istek_kodu,
+        "sure_gun": istek.sure_gun,
+        "yetki": istek.yetki,
+    }
+
+
+@app.put("/panel/yetkili-guncelle/{yetkili_id}")
+async def panel_yetkili_guncelle(
+    yetkili_id: int,
+    request: Request,
+    user: PanelUserDto = Depends(panel_dogrula),
+    s: Session = Depends(db)
+):
+    """Mevcut yetkili kullanıcının yetkilerini günceller (sadece admin)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Yalnızca admin güncelleyebilir.")
+    data = await request.json()
+    y = s.query(PanelKullanici).filter_by(id=yetkili_id).first()
+    if not y:
+        raise HTTPException(status_code=404, detail="Yetkili bulunamadı.")
+    yetki_map = {
+        "lisans_olustur": "yetki_lisans_olustur",
+        "lisans_sil":     "yetki_lisans_sil",
+        "hwid_sifirla":   "yetki_hwid_sifirla",
+        "sure_uzat":      "yetki_sure_uzat",
+        "talep_onayla":   "yetki_talep_onayla",
+        "kullanici_ekle": "yetki_kullanici_ekle",
+        "mesaj_yaz":      "yetki_mesaj_yaz",
+        "ip_ban":         "yetki_ip_ban",
+        "uyelik_tur":     "yetki_uyelik_tur",
+        "offline_lisans": "yetki_offline_lisans",
+    }
+    yetkiler = data.get("yetkiler", {})
+    for key, col in yetki_map.items():
+        if key in yetkiler:
+            setattr(y, col, bool(yetkiler[key]))
+    s.commit()
+    panel_log_yaz(s, user.kullanici_adi, "Yetkili Güncelledi", f"ID: {yetkili_id}")
+    return {"basarili": True}
 
 
 # =====================================================================
@@ -1495,6 +1619,9 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
   </div>
   <div class="nav-item yetki-admin-only" onclick="sayfaAc('panel-loglari')" id="nav-panel-loglari" style="display:none">
     <span class="nav-icon">📑</span> Kayıtlar
+  </div>
+  <div class="nav-item yetki-offline-lisans" onclick="sayfaAc('offline-lisans')" id="nav-offline-lisans" style="display:none">
+    <span class="nav-icon">🔒</span> Offline Lisans
   </div>
   <div class="nav-item" onclick="panelCikis()" style="margin-top:auto;color:#ef4444;border-top:1px solid #2a2d3e;padding-top:14px;">
     <span class="nav-icon">🚪</span> Çıkış Yap
@@ -1737,6 +1864,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
           <label><input type="checkbox" id="cb-mesaj_yaz"> Mesaj Yazabilme</label>
           <label><input type="checkbox" id="cb-ip_ban"> IP Banlama & Kaldırma</label>
           <label><input type="checkbox" id="cb-uyelik_tur"> Üyelik Türleri Yönetimi</label>
+          <label><input type="checkbox" id="cb-offline_lisans"> 🔒 Çevrimdışı Lisans Üretme</label>
         </div>
         <button class="btn btn-primary" onclick="yetkiliEkle()">✚ Ekle</button>
       </div>
@@ -1768,6 +1896,45 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
           <thead><tr><th>Tarih</th><th>Yetkili</th><th>İşlem</th><th>Detay</th></tr></thead>
           <tbody id="panel-log-tablo"></tbody>
         </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Offline Lisans Üretici -->
+  <div class="page" id="page-offline-lisans">
+    <div class="page-title">🔒 Çevrimdışı Lisans Üretici</div>
+    <div style="display:grid;grid-template-columns:380px 1fr;gap:16px;">
+      <!-- Form -->
+      <div class="card">
+        <h3 style="margin-bottom:14px;">Aktivasyon Kodu Üret</h3>
+        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">İstek Kodu (Müşteriden alınan REQ-...):</label>
+        <input type="text" id="ol-istek-kodu" placeholder="REQ-XXXXXXXXXXXXXXXXXXXX" style="font-family:Consolas;letter-spacing:1px;">
+        <label style="font-size:11px;color:#666;display:block;margin:10px 0 4px;">Süre (Gün):</label>
+        <input type="number" id="ol-sure" value="30" min="1" max="365">
+        <label style="font-size:11px;color:#666;display:block;margin:10px 0 4px;">Yetki Seviyesi:</label>
+        <select id="ol-yetki">
+          <option value="FULL">FULL — Tam Erişim</option>
+          <option value="READ">READ — Sadece Okuma</option>
+          <option value="DEMO">DEMO — Demo Modu</option>
+        </select>
+        <button class="btn btn-primary" style="margin-top:14px;width:100%;" onclick="offlineLisansUret()">⚡ Aktivasyon Kodu Üret</button>
+        <div id="ol-hata" style="color:#f87171;font-size:12px;margin-top:8px;display:none;"></div>
+      </div>
+      <!-- Sonuç -->
+      <div class="card" id="ol-sonuc-kart" style="display:none;">
+        <h3 style="color:#4caf50;margin-bottom:12px;">✅ Aktivasyon Kodu Üretildi</h3>
+        <div style="background:#1b5e2022;border:1px solid #4caf5044;border-radius:8px;padding:18px;margin-bottom:14px;">
+          <div style="font-size:10px;color:#666;margin-bottom:6px;">Aktivasyon Kodu (Müşteriye Gönder):</div>
+          <div id="ol-akt-kod" style="font-family:Consolas;font-size:15px;font-weight:bold;color:#00e676;letter-spacing:1px;word-break:break-all;"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <button class="btn btn-success" onclick="olKopyala()" id="ol-kopyala-btn">📋 Kopyala</button>
+          <span id="ol-kopyala-ok" style="font-size:12px;color:#4caf50;align-self:center;display:none;">✓ Kopyalandı!</span>
+        </div>
+        <div style="font-size:12px;color:#888;line-height:1.8;">
+          <div>İstek Kodu: <code id="ol-det-istek" style="color:#7eb8ff;"></code></div>
+          <div>Süre: <b id="ol-det-sure" style="color:#e0e0e0;"></b> Gün &nbsp;|  Yetki: <b id="ol-det-yetki" style="color:#e0e0e0;"></b></div>
+        </div>
       </div>
     </div>
   </div>
@@ -1814,6 +1981,7 @@ function arayuzuYetkilendir() {
   goster("yetki-sure-uzat", "sure_uzat");
   goster("yetki-ip-ban", "ip_ban");
   goster("yetki-uyelik-tur", "uyelik_tur");
+  goster("yetki-offline-lisans", "offline_lisans");
   // Talep onayla butonu ve JS içi render kısımlarını ayrıca idare edeceğiz.
 }
 
@@ -1886,6 +2054,11 @@ function panelOtoPoll() {
     loglar:          logYukle,
     yetkililer:      yetkilileriYukle,
     "panel-loglari": panelLoglariYukle,
+    "offline-lisans": () => {
+       document.getElementById("ol-istek-kodu").value = "";
+       document.getElementById("ol-sonuc-kart").style.display = "none";
+       document.getElementById("ol-hata").style.display = "none";
+    },
   };
   if (yukle[_aktifSayfa]) yukle[_aktifSayfa]();
 }
@@ -2378,6 +2551,8 @@ function yetkiliEkle() {
       kullanici_ekle: document.getElementById("cb-kullanici_ekle").checked,
       mesaj_yaz: document.getElementById("cb-mesaj_yaz").checked,
       ip_ban: document.getElementById("cb-ip_ban").checked,
+      uyelik_tur: document.getElementById("cb-uyelik_tur").checked,
+      offline_lisans: document.getElementById("cb-offline_lisans").checked,
   };
   
   if (!kullanici_adi || !email || !sifre || !isim_soyad) { notif("Tüm alanları doldurun!", true); return; }
@@ -2397,6 +2572,58 @@ function yetkiliEkle() {
       } else {
           notif(d.detail || "Eklenemedi", true);
       }
+  });
+}
+
+function offlineLisansUret() {
+  const req_kodu = document.getElementById("ol-istek-kodu").value.trim();
+  const sure     = parseInt(document.getElementById("ol-sure").value) || 30;
+  const yetki    = document.getElementById("ol-yetki").value;
+  const hataEl   = document.getElementById("ol-hata");
+
+  hataEl.style.display = "none";
+  if(!req_kodu) {
+     hataEl.textContent = "İstek Kodu girmeniz gerekiyor.";
+     hataEl.style.display = "block";
+     return;
+  }
+  
+  fetch("/panel/offline-lisans-uret", {
+      method:"POST", 
+      headers:auth(),
+      body: JSON.stringify({ istek_kodu: req_kodu, sure_gun: sure, yetki: yetki })
+  }).then(r => r.json()).then(d => {
+      if(d.basarili) {
+          document.getElementById("ol-akt-kod").textContent = d.aktivasyon_kodu;
+          document.getElementById("ol-det-istek").textContent = d.istek_kodu;
+          document.getElementById("ol-det-sure").textContent = d.sure_gun;
+          document.getElementById("ol-det-yetki").textContent = d.yetki;
+          
+          document.getElementById("ol-sonuc-kart").style.display = "block";
+          document.getElementById("ol-kopyala-ok").style.display = "none";
+          document.getElementById("ol-kopyala-btn").textContent = "📋 Kopyala";
+          notif("Aktivasyon kodu üretildi.");
+      } else {
+          hataEl.textContent = d.detail || "Hata oluştu.";
+          hataEl.style.display = "block";
+          document.getElementById("ol-sonuc-kart").style.display = "none";
+      }
+  }).catch(e => {
+      hataEl.textContent = "Sunucu ile iletişim kurulamadı.";
+      hataEl.style.display = "block";
+  });
+}
+
+function olKopyala() {
+  const txt = document.getElementById("ol-akt-kod").textContent;
+  if(!txt) return;
+  navigator.clipboard.writeText(txt).then(() => {
+      document.getElementById("ol-kopyala-btn").textContent = "✓ Kopyalandı";
+      document.getElementById("ol-kopyala-ok").style.display = "inline";
+      setTimeout(() => {
+          document.getElementById("ol-kopyala-btn").textContent = "📋 Kopyala";
+          document.getElementById("ol-kopyala-ok").style.display = "none";
+      }, 2000);
   });
 }
 

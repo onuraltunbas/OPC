@@ -21,6 +21,11 @@ import tempfile
 import multiprocessing
 import ssl
 import time
+import hmac
+import base64
+import struct
+import winreg
+import ctypes
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
@@ -89,6 +94,325 @@ class HwidUretici:
 
         raw = f"{cpu_id}::{mb_uuid}::{UYGULAMA_SIFRESI}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32].upper()
+
+
+# =====================================================================
+# BÖLÜM 0.5: OFFLİNE LİSANS ALTYAPISI (Mevcut online sisteme dokunulmaz)
+# =====================================================================
+
+# --- Gömülü Offline Anahtar (parçalara bölünmüş, runtime'da birleştirilir) ---
+_SK_P1 = bytes([0x4f, 0x50, 0x43, 0x5f, 0x47, 0x57, 0x5f, 0x4f])
+_SK_P2 = bytes([0x46, 0x46, 0x4c, 0x49, 0x4e, 0x45, 0x5f, 0x4b])
+_SK_P3 = hashlib.sha256(b"opcgw_offline_2026_salt_v1").digest()[:16]
+OFFLINE_SECRET_KEY = _SK_P1 + _SK_P2 + _SK_P3
+
+OFFLINE_LISANS_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "offline_lisans.dat")
+OFFLINE_BURNIN_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "burnin.dat")
+OFFLINE_REG_PATH      = r"Software\OPCGateway\OfflineLicense"
+OFFLINE_MAX_GUN       = 365
+
+
+def _debugger_kontrol():
+    """IsDebuggerPresent ile anlık debugger tespiti — tespit edilirse anında çık."""
+    try:
+        if ctypes.windll.kernel32.IsDebuggerPresent():
+            os.abort()
+    except Exception:
+        pass
+
+
+class OfflineHwidUretici:
+    """
+    Anti-Spoofing HWID:
+    Anakart Seri No + Disk Volume Serial + MachineGuid → HMAC-SHA256 → hwid_hash
+    """
+
+    @staticmethod
+    def _reg_oku(hive, path, name, default=""):
+        try:
+            key = winreg.OpenKey(hive, path)
+            val = winreg.QueryValueEx(key, name)[0]
+            winreg.CloseKey(key)
+            return str(val).strip()
+        except Exception:
+            return default
+
+    @staticmethod
+    def _disk_serial():
+        try:
+            vol_serial = ctypes.c_ulong(0)
+            ctypes.windll.kernel32.GetVolumeInformationW(
+                "C:\\", None, 0, ctypes.byref(vol_serial), None, None, None, 0
+            )
+            return f"{vol_serial.value:08X}"
+        except Exception:
+            return "00000000"
+
+    @staticmethod
+    def uret() -> str:
+        mb_serial = OfflineHwidUretici._reg_oku(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\BIOS",
+            "BaseBoardSerialNumber"
+        )
+        machine_guid = OfflineHwidUretici._reg_oku(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Cryptography",
+            "MachineGuid"
+        )
+        disk_serial = OfflineHwidUretici._disk_serial()
+        raw = f"{mb_serial}|{machine_guid}|{disk_serial}".encode("utf-8")
+        return hmac.new(OFFLINE_SECRET_KEY, raw, hashlib.sha256).hexdigest()
+
+
+class ChallengeUretici:
+    """Tek kullanımlık, zaman damgalı istek kodu. Her tıklamada 10-dk penceresi değişir."""
+
+    @staticmethod
+    def uret(hwid_hash: str) -> str:
+        ts_slot = int(time.time()) // 600  # 10 dakikalık dilim
+        raw = hwid_hash[:8].encode("ascii") + struct.pack(">Q", ts_slot)
+        b32 = base64.b32encode(raw).decode().rstrip("=")
+        return f"REQ-{b32[:20]}"
+
+    @staticmethod
+    def gecerli_slotlar() -> list:
+        now = int(time.time()) // 600
+        return [now - 1, now, now + 1]
+
+
+class OfflineLisansYoneticisi:
+    """
+    Çevrimdışı lisans yönetimi:
+    • XOR şifreli yerel dosya + Registry çift kayıt
+    • Burn-in (tek kullanımlık şifre) koruma
+    • Zaman hilesi tespiti (takvim geri alma + GetTickCount64)
+    • HMAC-SHA256 imza doğrulaması
+    """
+
+    def __init__(self):
+        self.hwid_hash = OfflineHwidUretici.uret()
+        os.makedirs(os.path.dirname(OFFLINE_LISANS_DOSYASI), exist_ok=True)
+
+    # ── XOR şifreleme (simetrik, anahtar OFFLINE_SECRET_KEY'den türetilmiş) ──
+
+    @staticmethod
+    def _sifrele(veri: bytes) -> bytes:
+        key = hashlib.sha256(OFFLINE_SECRET_KEY + b"xor_v1").digest()
+        ks  = (key * (len(veri) // 32 + 1))[:len(veri)]
+        return bytes(a ^ b for a, b in zip(veri, ks))
+
+    @staticmethod
+    def _coz(veri: bytes) -> bytes:
+        return OfflineLisansYoneticisi._sifrele(veri)  # XOR simetriktir
+
+    # ── Dosya I/O ──
+
+    def _lisans_oku(self):
+        try:
+            with open(OFFLINE_LISANS_DOSYASI, "rb") as f:
+                return json.loads(self._coz(f.read()).decode("utf-8"))
+        except Exception:
+            return None
+
+    def _lisans_kaydet(self, veri: dict):
+        raw = json.dumps(veri, ensure_ascii=False).encode("utf-8")
+        with open(OFFLINE_LISANS_DOSYASI, "wb") as f:
+            f.write(self._sifrele(raw))
+        self._registry_kaydet(veri)
+
+    def _lisans_sil(self):
+        try:
+            os.remove(OFFLINE_LISANS_DOSYASI)
+        except Exception:
+            pass
+        self._registry_temizle()
+
+    # ── Registry çift kayıt ──
+
+    def _registry_kaydet(self, veri: dict):
+        try:
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, OFFLINE_REG_PATH)
+            for alan, deger in veri.items():
+                enc = base64.b64encode(
+                    self._sifrele(json.dumps(deger).encode())
+                ).decode()
+                winreg.SetValueEx(key, alan, 0, winreg.REG_SZ, enc)
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+
+    def _registry_oku(self) -> dict:
+        try:
+            key  = winreg.OpenKey(winreg.HKEY_CURRENT_USER, OFFLINE_REG_PATH)
+            veri = {}
+            i    = 0
+            while True:
+                try:
+                    name, val, _ = winreg.EnumValue(key, i)
+                    dec = self._coz(base64.b64decode(val.encode())).decode()
+                    veri[name] = json.loads(dec)
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+            return veri
+        except Exception:
+            return {}
+
+    def _registry_temizle(self):
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, OFFLINE_REG_PATH)
+        except Exception:
+            pass
+
+    # ── Burn-in listesi ──
+
+    def _burnin_kontrol(self, imza: str) -> bool:
+        imza_hash = hashlib.sha256(imza.encode()).hexdigest()
+        try:
+            with open(OFFLINE_BURNIN_DOSYASI, "r") as f:
+                return imza_hash in f.read().splitlines()
+        except Exception:
+            return False
+
+    def _burnin_ekle(self, imza: str):
+        try:
+            with open(OFFLINE_BURNIN_DOSYASI, "a") as f:
+                f.write(hashlib.sha256(imza.encode()).hexdigest() + "\n")
+        except Exception:
+            pass
+
+    # ── Zaman hilesi tespiti ──
+
+    @staticmethod
+    def _zaman_hilesi_mi(son_giris_ts: float) -> bool:
+        now = time.time()
+        if now < son_giris_ts - 30:      # Takvim geri alındı
+            return True
+        try:
+            GTC64 = ctypes.windll.kernel32.GetTickCount64
+            GTC64.restype = ctypes.c_ulonglong
+            uptime_sn = GTC64() / 1000.0
+            gecen     = now - son_giris_ts
+            # Uptime reboot sınırından çok daha kısa + saat farkı > 30 dk → şüpheli
+            if gecen > 1800 and uptime_sn < gecen - 1800:
+                return True
+        except Exception:
+            pass
+        return False
+
+    # ── TAMPERED kalıcı kilidi ──
+
+    def _tampered_kilitle(self):
+        lisans = self._lisans_oku() or {}
+        lisans["tampered"]    = True
+        lisans["tampered_ts"] = time.time()
+        self._lisans_kaydet(lisans)
+
+    # ── ACT kodu doğrulama ve aktivasyon ──
+
+    def aktive_et(self, act_kodu: str, challenge_kodu: str):
+        """Döndürür: (basari: bool, mesaj: str, yetki: str, sure_gun: int)"""
+        try:
+            p = act_kodu.strip().upper().split("-")
+            if len(p) != 4 or p[0] != "ACT":
+                return False, "Geçersiz aktivasyon kodu formatı.", "", 0
+            sure_str, yetki, imza = p[1], p[2], p[3]
+            if not sure_str.endswith("D"):
+                return False, "Geçersiz süre formatı.", "", 0
+            sure_gun = int(sure_str[:-1])
+            if not (1 <= sure_gun <= OFFLINE_MAX_GUN):
+                return False, f"Geçersiz süre (1-{OFFLINE_MAX_GUN} gün).", "", 0
+            if yetki not in ("FULL", "READ", "DEMO"):
+                return False, "Geçersiz yetki seviyesi.", "", 0
+        except Exception:
+            return False, "Aktivasyon kodu ayrıştırılamadı.", "", 0
+
+        if self._burnin_kontrol(imza):
+            return False, "Bu aktivasyon kodu daha önce kullanılmış.", "", 0
+
+        # HMAC imza doğrulama
+        mesaj = f"{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8")
+        beklenen = hmac.new(OFFLINE_SECRET_KEY, mesaj, hashlib.sha256).hexdigest()[:16].upper()
+        if not hmac.compare_digest(imza, beklenen):
+            return False, "Aktivasyon kodu imzası geçersiz.", "", 0
+
+        # Challenge'daki HWID prefix'ini doğrula
+        try:
+            req_b32 = challenge_kodu.replace("REQ-", "")
+            padding = "=" * ((-len(req_b32)) % 8)
+            decoded = base64.b32decode(req_b32 + padding)
+            if decoded[:8].decode("ascii") != self.hwid_hash[:8]:
+                return False, "İstek kodu bu bilgisayara ait değil.", "", 0
+        except Exception:
+            return False, "İstek kodu doğrulanamadı.", "", 0
+
+        now_ts = time.time()
+        lisans = {
+            "hwid_hash":    self.hwid_hash,
+            "sure_gun":     sure_gun,
+            "yetki":        yetki,
+            "aktivasyon_ts":now_ts,
+            "bitis_ts":     now_ts + sure_gun * 86400,
+            "son_giris_ts": now_ts,
+            "imza":         imza,
+            "tampered":     False,
+        }
+        self._lisans_kaydet(lisans)
+        self._burnin_ekle(imza)
+        return True, f"Aktivasyon başarılı! ({sure_gun} gün, {yetki})", yetki, sure_gun
+
+    # ── Başlangıç doğrulama ──
+
+    def dogrula(self):
+        """Döndürür: (durum: str, yetki: str)
+        durum: 'gecerli' | 'aktivasyon' | 'tampered' | 'hata:...'"""
+        _debugger_kontrol()
+
+        lisans     = self._lisans_oku()
+        reg_lisans = self._registry_oku()
+
+        if not lisans:
+            return "aktivasyon", ""
+
+        if lisans.get("tampered"):
+            return "tampered", ""
+
+        # Registry vs dosya tutarlılık
+        if reg_lisans:
+            if reg_lisans.get("hwid_hash") != lisans.get("hwid_hash"):
+                self._tampered_kilitle(); return "tampered", ""
+            if reg_lisans.get("imza") != lisans.get("imza"):
+                self._tampered_kilitle(); return "tampered", ""
+
+        # HWID eşleşmesi
+        if lisans.get("hwid_hash") != self.hwid_hash:
+            self._lisans_sil()
+            return "hata:Bu offline lisans başka bir bilgisayara aittir.", ""
+
+        # Zaman hilesi
+        if self._zaman_hilesi_mi(lisans.get("son_giris_ts", 0)):
+            self._tampered_kilitle(); return "tampered", ""
+
+        # Süre kontrolü
+        if time.time() > lisans.get("bitis_ts", 0):
+            self._lisans_sil()
+            return "hata:Offline lisans süreniz dolmuştur.", ""
+
+        # İmza bütünlük kontrolü
+        imza = lisans.get("imza", "")
+        if not imza or len(imza) != 16:
+            self._tampered_kilitle(); return "tampered", ""
+
+        # Son girişi güncelle
+        lisans["son_giris_ts"] = time.time()
+        self._lisans_kaydet(lisans)
+
+        return "gecerli", lisans.get("yetki", "FULL")
+
+    def lisans_bilgisi(self):
+        return self._lisans_oku()
 
 
 # =====================================================================
@@ -469,6 +793,212 @@ class AktivasyonPenceresi(QDialog):
 
 
 # =====================================================================
+# BÖLÜM 2.5: OFFLİNE AKTİVASYON PENCERESİ
+# =====================================================================
+class OfflineAktivasyonPenceresi(QDialog):
+    aktivasyon_basarili = pyqtSignal(str)   # yetki seviyesini taşır
+
+    def __init__(self, offline_ly: OfflineLisansYoneticisi):
+        super().__init__()
+        self.oly = offline_ly
+        self._guncel_challenge = ""
+        self.setWindowTitle("OPC Gateway — Çevrimdışı Aktivasyon")
+        self.setFixedSize(540, 500)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.setStyleSheet("background:#0f1117; color:#e0e0e0;")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(26, 20, 26, 20)
+
+        # — Başlık —
+        lbl_baslik = QtWidgets.QLabel("🔒  Çevrimdışı (Air-Gapped) Aktivasyon")
+        lbl_baslik.setStyleSheet(
+            "font-size:15px; font-weight:bold; color:#e65100;"
+            "background:transparent;"
+        )
+        lbl_baslik.setAlignment(Qt.AlignCenter)
+        layout.addWidget(lbl_baslik)
+
+        lbl_acik = QtWidgets.QLabel(
+            "İnternet bağlantısı tespit edilmedi.\n"
+            "Satıcıdan aldığınız aktivasyon kodunu girin."
+        )
+        lbl_acik.setStyleSheet("font-size:11px; color:#888; background:transparent;")
+        lbl_acik.setAlignment(Qt.AlignCenter)
+        layout.addWidget(lbl_acik)
+
+        # — HWID Hash —
+        hwid_frame = QtWidgets.QFrame()
+        hwid_frame.setStyleSheet(
+            "background:#1a1d2e; border:1px solid #2a2d3e; border-radius:6px;"
+        )
+        hwid_lay = QtWidgets.QVBoxLayout(hwid_frame)
+        hwid_lay.setContentsMargins(10, 8, 10, 8)
+        hwid_lay.setSpacing(4)
+
+        lbl_hw_t = QtWidgets.QLabel("Donanım Kimliği (HWID Hash):")
+        lbl_hw_t.setStyleSheet("font-size:10px; color:#666; background:transparent;")
+        self.lbl_hwid = QtWidgets.QLabel(self.oly.hwid_hash)
+        self.lbl_hwid.setStyleSheet(
+            "font-family:Consolas; font-size:10px; color:#7eb8ff;"
+            "letter-spacing:1px; background:transparent;"
+        )
+        self.lbl_hwid.setWordWrap(True)
+        self.lbl_hwid.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        btn_hwid_kopyala = QtWidgets.QPushButton("Kopyala")
+        btn_hwid_kopyala.setFixedHeight(24)
+        btn_hwid_kopyala.setStyleSheet(
+            "background:#222540; color:#5b8cff; border:1px solid #2a2d3e;"
+            "border-radius:4px; font-size:11px; padding:0 8px;"
+        )
+        btn_hwid_kopyala.clicked.connect(
+            lambda: QtWidgets.QApplication.clipboard().setText(self.oly.hwid_hash)
+        )
+
+        hwid_lay.addWidget(lbl_hw_t)
+        hwid_lay.addWidget(self.lbl_hwid)
+        hwid_lay.addWidget(btn_hwid_kopyala, alignment=Qt.AlignRight)
+        layout.addWidget(hwid_frame)
+
+        # — İstek Kodu (Challenge) —
+        ch_frame = QtWidgets.QFrame()
+        ch_frame.setStyleSheet(
+            "background:#1a1d2e; border:1px solid #2a2d3e; border-radius:6px;"
+        )
+        ch_lay = QtWidgets.QVBoxLayout(ch_frame)
+        ch_lay.setContentsMargins(10, 8, 10, 8)
+        ch_lay.setSpacing(6)
+
+        lbl_ch_t = QtWidgets.QLabel("İstek Kodu  (satıcıya gönderin):")
+        lbl_ch_t.setStyleSheet("font-size:10px; color:#666; background:transparent;")
+
+        self.lbl_challenge = QtWidgets.QLabel("—  (Üret butonuna basın)")
+        self.lbl_challenge.setStyleSheet(
+            "font-family:Consolas; font-size:14px; font-weight:bold;"
+            "color:#00e676; letter-spacing:2px; background:transparent;"
+        )
+        self.lbl_challenge.setAlignment(Qt.AlignCenter)
+        self.lbl_challenge.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        ch_btn_row = QtWidgets.QHBoxLayout()
+        self.btn_uret = QtWidgets.QPushButton("🔄  İstek Kodu Üret")
+        self.btn_uret.setFixedHeight(30)
+        self.btn_uret.setStyleSheet(
+            "background:#1b5e20; color:#a5d6a7; border:none;"
+            "border-radius:5px; font-size:12px; font-weight:bold;"
+        )
+        self.btn_uret.clicked.connect(self._challenge_uret)
+
+        self.btn_ch_kopyala = QtWidgets.QPushButton("📋 Kopyala")
+        self.btn_ch_kopyala.setFixedHeight(30)
+        self.btn_ch_kopyala.setEnabled(False)
+        self.btn_ch_kopyala.setStyleSheet(
+            "background:#222540; color:#5b8cff; border:1px solid #2a2d3e;"
+            "border-radius:5px; font-size:12px;"
+        )
+        self.btn_ch_kopyala.clicked.connect(
+            lambda: QtWidgets.QApplication.clipboard().setText(self._guncel_challenge)
+        )
+
+        ch_btn_row.addWidget(self.btn_uret)
+        ch_btn_row.addWidget(self.btn_ch_kopyala)
+        ch_lay.addWidget(lbl_ch_t)
+        ch_lay.addWidget(self.lbl_challenge)
+        ch_lay.addLayout(ch_btn_row)
+        layout.addWidget(ch_frame)
+
+        # — Aktivasyon Kodu girişi —
+        lbl_act = QtWidgets.QLabel("Aktivasyon Kodu  (satıcıdan alınan):")
+        lbl_act.setStyleSheet("font-size:11px; color:#aaa; background:transparent;")
+        layout.addWidget(lbl_act)
+
+        self.txt_act = QtWidgets.QLineEdit()
+        self.txt_act.setPlaceholderText("ACT-30D-FULL-XXXXXXXXXXXXXXXX")
+        self.txt_act.setFixedHeight(38)
+        self.txt_act.setStyleSheet(
+            "background:#1a1d2e; border:1px solid #2a2d3e; border-radius:6px;"
+            "color:#e0e0e0; font-family:Consolas; font-size:13px;"
+            "letter-spacing:1px; padding:0 10px;"
+        )
+        layout.addWidget(self.txt_act)
+
+        # — Durum mesajı —
+        self.lbl_durum = QtWidgets.QLabel("")
+        self.lbl_durum.setAlignment(Qt.AlignCenter)
+        self.lbl_durum.setWordWrap(True)
+        self.lbl_durum.setMinimumHeight(32)
+        self.lbl_durum.setStyleSheet("font-size:12px; background:transparent;")
+        layout.addWidget(self.lbl_durum)
+
+        # — Aktive Et butonu —
+        self.btn_aktive = QtWidgets.QPushButton("✔  Aktive Et")
+        self.btn_aktive.setFixedHeight(42)
+        self.btn_aktive.setStyleSheet(
+            "background:#1565c0; color:white; font-size:14px;"
+            "font-weight:bold; border-radius:6px; border:none;"
+        )
+        self.btn_aktive.clicked.connect(self._aktive_et)
+        layout.addWidget(self.btn_aktive)
+
+        self.txt_act.returnPressed.connect(self._aktive_et)
+
+    # ── Challenge üret ──
+    def _challenge_uret(self):
+        ch = ChallengeUretici.uret(self.oly.hwid_hash)
+        self._guncel_challenge = ch
+        self.lbl_challenge.setText(ch)
+        self.btn_ch_kopyala.setEnabled(True)
+        self.lbl_durum.setText("İstek kodu üretildi. Satıcıya gönderin.")
+        self.lbl_durum.setStyleSheet("color:#00e676; font-size:11px;")
+
+    # ── Aktivasyon ──
+    def _aktive_et(self):
+        act = self.txt_act.text().strip()
+        if not act:
+            self._durum_hata("Lütfen aktivasyon kodunu girin.")
+            return
+        if not self._guncel_challenge:
+            self._durum_hata("Önce 'İstek Kodu Üret' butonuna basın.")
+            return
+
+        self.btn_aktive.setEnabled(False)
+        self.lbl_durum.setText("Doğrulanıyor...")
+        self.lbl_durum.setStyleSheet("color:#e65100; font-size:12px;")
+        QtWidgets.QApplication.processEvents()
+
+        def islem():
+            basari, mesaj, yetki, sure_gun = self.oly.aktive_et(
+                act, self._guncel_challenge
+            )
+            QtCore.QMetaObject.invokeMethod(
+                self, "_aktivasyon_sonuc",
+                Qt.QueuedConnection,
+                QtCore.Q_ARG(bool, basari),
+                QtCore.Q_ARG(str, mesaj),
+                QtCore.Q_ARG(str, yetki),
+            )
+
+        threading.Thread(target=islem, daemon=True).start()
+
+    @QtCore.pyqtSlot(bool, str, str)
+    def _aktivasyon_sonuc(self, basari, mesaj, yetki):
+        if basari:
+            self.lbl_durum.setText(f"✅  {mesaj}")
+            self.lbl_durum.setStyleSheet("color:#4caf50; font-size:12px;")
+            QTimer.singleShot(1000, lambda: self.aktivasyon_basarili.emit(yetki))
+            QTimer.singleShot(1000, self.accept)
+        else:
+            self._durum_hata(mesaj)
+            self.btn_aktive.setEnabled(True)
+
+    def _durum_hata(self, mesaj):
+        self.lbl_durum.setText(f"❌  {mesaj}")
+        self.lbl_durum.setStyleSheet("color:#c62828; font-size:12px;")
+
+
+# =====================================================================
 # BÖLÜM 3: THREAD-SAFE LOG KÖPRÜSÜ
 # =====================================================================
 class LogKoprusu(QObject):
@@ -842,9 +1372,12 @@ class GatewayWorker(QThread):
 # BÖLÜM 7: ANA UYGULAMA
 # =====================================================================
 class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
-    def __init__(self, lisans_yoneticisi: LisansYoneticisi, lisans_kontrolcusu: 'LisansKontrolcusu'):
+    def __init__(self, lisans_yoneticisi: LisansYoneticisi,
+                 lisans_kontrolcusu: 'LisansKontrolcusu',
+                 offline_yetki: str = ""):
         super().__init__()
         self.ly = lisans_yoneticisi
+        self._offline_yetki = offline_yetki  # "" = online mod, "FULL"/"READ"/"DEMO" = offline
         self.setupUi(self)
         self.worker   = None
         self._kurulum = None
@@ -857,12 +1390,20 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self.btn_baslat.clicked.connect(self._baslat)
         self.btn_durdur.clicked.connect(self._durdur)
 
-        # Arka plan lisans kontrolcüsünü bağla
+        # Arka plan lisans kontrolcüsünü bağla (sadece online modda aktif)
         self._lisans_kontrolcusu = lisans_kontrolcusu
-        self._lisans_kontrolcusu.lisans_iptal_edildi.connect(self._lisans_iptal_islemi)
+        if self._lisans_kontrolcusu:
+            self._lisans_kontrolcusu.lisans_iptal_edildi.connect(self._lisans_iptal_islemi)
+
+        # Debugger periyodik kontrol (her 3 saniyede bir)
+        self._debugger_timer = QTimer(self)
+        self._debugger_timer.timeout.connect(_debugger_kontrol)
+        self._debugger_timer.start(3000)
 
         self._lisans_bilgisi_goster()
         self._log(f"OPC DA -> OPC UA Gateway v{VERSIYON} hazir.")
+        if self._offline_yetki:
+            self._log(f"[OFFLİNE MOD] Yetki seviyesi: {self._offline_yetki}")
         self._log("   Adimlar: Sunucu Tara -> Etiket Tara -> Sec -> Baslat\n")
 
     def _lisans_bilgisi_goster(self):
@@ -950,6 +1491,17 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             self._log(f"Etiket tarama hatasi: {e}")
 
     def _baslat(self):
+        # --- Dağıtık lisans kontrolü (A8) ---
+        _debugger_kontrol()
+        if self._offline_yetki:
+            oly_check = OfflineLisansYoneticisi()
+            durum, _ = oly_check.dogrula()
+            if durum != "gecerli":
+                QMessageBox.critical(self, "Lisans Hatası",
+                    "Offline lisans geçersiz veya süresi dolmuş.\nProgram kapatılıyor.")
+                QtWidgets.QApplication.quit()
+                return
+
         prog_id = self.cb_sunucu.currentText().strip()
         secili  = [item.text() for item in self.list_etiket.selectedItems()]
         if not prog_id:
@@ -1021,17 +1573,105 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         if self._lisans_kontrolcusu and self._lisans_kontrolcusu.isRunning():
             self._lisans_kontrolcusu.durdur()
             self._lisans_kontrolcusu.wait(3000)
+        if hasattr(self, "_debugger_timer"):
+            self._debugger_timer.stop()
         event.accept()
 
 
 # =====================================================================
-# BÖLÜM 8: UYGULAMA GİRİŞİ
+# BÖLÜM 8: UYGULAMA GİRİŞİ (Hibrit: Online önce, yoksa Offline)
 # =====================================================================
+
+def internet_var_mi() -> bool:
+    """Sunucuya kısa bir istek atar; başarılıysa True döner."""
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+        urllib.request.urlopen(SUNUCU_URL, context=ctx, timeout=4)
+        return True
+    except Exception:
+        return False
+
+
+def _offline_akis(app):
+    """İnternet yoksa offline lisans akışını yönetir."""
+    oly = OfflineLisansYoneticisi()
+
+    # Splash
+    splash = QtWidgets.QDialog()
+    splash.setWindowTitle("OPC Gateway - Lisans Kontrolu")
+    splash.setFixedSize(340, 80)
+    splash.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+    lbl_s = QtWidgets.QLabel("Çevrimdışı lisans kontrol ediliyor...", splash)
+    lbl_s.setAlignment(Qt.AlignCenter)
+    lbl_s.setGeometry(0, 0, 340, 80)
+    splash.show()
+    app.processEvents()
+
+    durum, yetki = oly.dogrula()
+    splash.hide()
+
+    if durum == "tampered":
+        QMessageBox.critical(
+            None, "Güvenlik İhlali",
+            "Lisans dosyasında yetkisiz değişiklik tespit edildi.\n"
+            "Program güvenlik nedeniyle çalışamaz.\n"
+            "Satıcıyla iletişime geçin."
+        )
+        sys.exit(2)
+
+    elif durum == "aktivasyon":
+        aktiv = OfflineAktivasyonPenceresi(oly)
+        if aktiv.exec_() != QDialog.Accepted:
+            sys.exit(0)
+        # Aktivasyon sonrası tekrar doğrula
+        durum, yetki = oly.dogrula()
+        if durum != "gecerli":
+            QMessageBox.critical(None, "Lisans Hatası",
+                                 durum.replace("hata:", ""))
+            sys.exit(1)
+
+    elif durum.startswith("hata:"):
+        QMessageBox.critical(None, "Lisans Hatası",
+                             durum.replace("hata:", ""))
+        sys.exit(1)
+
+    # Offline modda LisansKontrolcusu yok (internet yok)
+    pencere = GatewayApp(None, None, offline_yetki=yetki)
+    pencere.show()
+    sys.exit(app.exec_())
+
+
 def uygulamayi_baslat():
     app = QtWidgets.QApplication(sys.argv)
-    app.setWindowIcon(QIcon("logo.ico"))
+    try:
+        from PyQt5.QtGui import QIcon
+        app.setWindowIcon(QIcon("logo.ico"))
+    except Exception:
+        pass
     app.setStyle("Fusion")
 
+    # ── İnternet kontrolü ──
+    splash = QtWidgets.QDialog()
+    splash.setWindowTitle("OPC Gateway - Baslaniyor")
+    splash.setFixedSize(300, 80)
+    splash.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+    lbl = QtWidgets.QLabel("Baglanti kontrol ediliyor...", splash)
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setGeometry(0, 0, 300, 80)
+    splash.show()
+    app.processEvents()
+
+    bagli = internet_var_mi()
+    splash.hide()
+
+    if not bagli:
+        # ══ OFFLİNE AKIŞ ══
+        _offline_akis(app)
+        return  # sys.exit içinde zaten biter
+
+    # ══ ONLINE AKIŞ (mevcut kod — tek karakter bile değişmedi) ══
     ly = LisansYoneticisi()
 
     splash_dlg = QtWidgets.QDialog()
