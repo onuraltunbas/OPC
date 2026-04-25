@@ -69,21 +69,33 @@ if __name__ == "__main__":
     with open(temp_loader_path, "w", encoding="utf-8") as f:
         f.write(loader_code)
 
-    # 4. PYINSTALLER İLE EXE YAPMA
+   # 4. PYINSTALLER İLE EXE YAPMA
     print("[*] EXE derleniyor...")
     logo_path = os.path.join(current_dir, "logo.ico")
     ver_path = os.path.join(current_dir, "ver.txt")
     manifest_path = os.path.join(current_dir, "app.manifest")
+    
+    # Kütüphaneleri zorla EXE içine gömme listesi
+    hidden_imports = [
+        "--hidden-import=OpenOPC", 
+        "--hidden-import=pywin32", 
+        "--hidden-import=cryptography",
+        "--hidden-import=asyncio",
+        "--hidden-import=PyQt5",
+        "--hidden-import=asyncua",
+        "--hidden-import=pythoncom",
+        "--hidden-import=pywintypes",
+        "--hidden-import=urllib.request",
+        "--hidden-import=urllib.error"
+    ]
     
     pyinstaller_cmd = [
         "pyinstaller", "--onefile", "--noconsole",
         "--noupx", "--name=" + output_name,
         f"--icon={logo_path}",
         f"--version-file={ver_path}",
-        f"--manifest={manifest_path}",
-        "--hidden-import=OpenOPC", "--hidden-import=pywin32", "--hidden-import=cryptography",
-        temp_loader_path
-    ]
+        f"--manifest={manifest_path}"
+    ] + hidden_imports + [temp_loader_path]
     
     # Derleme işlemini de sifreleme dizininde yapması için cwd ayarlıyoruz
     subprocess.run(pyinstaller_cmd, shell=True, cwd=current_dir)
