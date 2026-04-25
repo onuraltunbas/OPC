@@ -1235,12 +1235,13 @@ class GatewayWorker(QThread):
     log_sinyali   = pyqtSignal(str)
     bitti_sinyali = pyqtSignal()
 
-    def __init__(self, prog_id, ip, port, etiketler):
+    def __init__(self, prog_id, ip, port, etiketler, yetki="FULL"): # yetki eklendi
         super().__init__()
         self.prog_id    = prog_id
         self.ip         = ip
         self.port       = port
         self.etiketler  = etiketler
+        self.yetki      = yetki # yetki kaydedildi
         self._calisıyor = True
 
     def _log(self, metin):
@@ -1324,7 +1325,12 @@ class GatewayWorker(QThread):
             for et in self.etiketler:
                 safe = et.replace(".", "_").replace(" ", "_").replace("\\", "_")
                 node = await kok.add_variable(idx, safe, 0.0, ua.VariantType.Double)
-                await node.set_writable()
+                
+                # --- EKLENEN KISIM: READ YETKİ KONTROLÜ ---
+                if self.yetki != "READ":
+                    await node.set_writable()
+                # ------------------------------------------
+                
                 etiket_haritasi[et] = node
 
             self._log(f"{len(self.etiketler)} etiket UA'ya eklendi. Dongu basliyor...\n")
@@ -1405,6 +1411,14 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         if self._offline_yetki:
             self._log(f"[OFFLİNE MOD] Yetki seviyesi: {self._offline_yetki}")
         self._log("   Adimlar: Sunucu Tara -> Etiket Tara -> Sec -> Baslat\n")
+        baslik = f"OPC DA -> OPC UA Gateway v{VERSIYON}"
+        if self._offline_yetki == "DEMO":
+            baslik += "   [ ⚠️ DEMO SÜRÜM - TİCARİ KULLANILAMAZ ]"
+            self._log("!!! DİKKAT: DEMO SÜRÜM KULLANIYORSUNUZ !!!")
+        elif self._offline_yetki == "READ":
+            baslik += "   [ 👁️ SADECE İZLEME (READ-ONLY) MODU ]"
+            self._log("!!! DİKKAT: YAZMA YETKİSİ KAPALI !!!")
+        self.setWindowTitle(baslik)
 
     def _lisans_bilgisi_goster(self):
         bilgi = self.ly.lisans_bilgisi()
@@ -1518,7 +1532,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self.btn_baslat.setEnabled(False)
         self.btn_durdur.setEnabled(True)
 
-        self.worker = GatewayWorker(prog_id, ip, port, secili)
+        self.worker = GatewayWorker(prog_id, ip, port, secili, self._offline_yetki)
         self.worker.log_sinyali.connect(self._log)
         self.worker.bitti_sinyali.connect(self._bitti)
         self.worker.start()
