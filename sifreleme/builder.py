@@ -82,6 +82,9 @@ if __name__ == "__main__":
         "--hidden-import=cryptography",
         "--hidden-import=asyncio",
         "--hidden-import=PyQt5",
+        "--hidden-import=PyQt5.QtCore",      # <--- EKLENDİ
+        "--hidden-import=PyQt5.QtGui",       # <--- EKLENDİ
+        "--hidden-import=PyQt5.QtWidgets",   # <--- EKLENDİ
         "--hidden-import=asyncua",
         "--hidden-import=pythoncom",
         "--hidden-import=pywintypes",
@@ -94,7 +97,8 @@ if __name__ == "__main__":
         "--noupx", "--name=" + output_name,
         f"--icon={logo_path}",
         f"--version-file={ver_path}",
-        f"--manifest={manifest_path}"
+        f"--manifest={manifest_path}",
+        f"--add-data={logo_path};.",     # <--- İŞTE BU SATIR EKLENDİ (Logoyu içeri paketler)
     ] + hidden_imports + [temp_loader_path]
     
     # Derleme işlemini de sifreleme dizininde yapması için cwd ayarlıyoruz

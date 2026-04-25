@@ -1647,9 +1647,24 @@ def uygulamayi_baslat():
     app = QtWidgets.QApplication(sys.argv)
     try:
         from PyQt5.QtGui import QIcon
-        app.setWindowIcon(QIcon("logo.ico"))
-    except Exception:
+        import ctypes
+        
+        # 1. PyInstaller Gizli Klasör Yolunu Çözücü
+        if hasattr(sys, '_MEIPASS'):
+            icon_path = os.path.join(sys._MEIPASS, 'logo.ico')
+        else:
+            icon_path = 'logo.ico'
+            
+        # 2. Windows Görev Çubuğu (Taskbar) İkon Sabitleyici (ŞART)
+        myappid = 'sirket.opcgateway.pro.v5' # Windows bu ID'ye göre ikonu ayırır
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        
+        # 3. İkonu Tüm Uygulama Pencerelerine Uygula
+        app.setWindowIcon(QIcon(icon_path))
+    except Exception as e:
+        print("Ikon hatasi:", e)
         pass
+
     app.setStyle("Fusion")
 
     # ── İnternet kontrolü ──
