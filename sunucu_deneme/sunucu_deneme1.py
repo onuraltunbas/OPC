@@ -272,12 +272,30 @@ def lisans_kodu_uret(tur_prefix="STD"):
 
 def bitis_tarihi_hesapla(tur: str, s: Session, saat: Optional[int] = None) -> Optional[datetime.datetime]:
     simdi = datetime.datetime.utcnow()
+    
     if tur == "deneme" and saat:
         return simdi + datetime.timedelta(hours=saat)
+        
     u_tur = s.query(UyelikTuru).filter_by(kod=tur).first()
-    if not u_tur or getattr(u_tur, 'sure_gun', 0) == 0:
+    
+    # Güvenlik önlemi: Tür bulunamazsa, herkese ömür boyu (None) vermek büyük bir açıktır.
+    if not u_tur:
+        if tur == "omur_boyu":
+            return None
+        if tur == "deneme":
+            return simdi + datetime.timedelta(hours=24)
+        # Diğer bilinmeyen türler için varsayılan olarak 30 gün ver
+        return simdi + datetime.timedelta(days=30)
+        
+    sure = getattr(u_tur, 'sure_gun', 0)
+    
+    # Eğer süre None veya 0 ise, bu ancak açıkça ömür boyu olanlar için geçerli olmalı
+    if sure is None or sure == 0:
+        if tur == "deneme":
+            return simdi + datetime.timedelta(hours=24)
         return None
-    return simdi + datetime.timedelta(days=u_tur.sure_gun)
+        
+    return simdi + datetime.timedelta(days=sure)
 
 def log_yaz(s: Session, islem, lisans_kodu, hwid, ip, mesaj):
     s.add(Log(islem=islem, lisans_kodu=lisans_kodu, hwid=hwid, ip=ip, mesaj=mesaj))
@@ -416,7 +434,7 @@ def aktive_et(istek: AktivasoyonIstek, request: Request, s: Session = Depends(db
     lisans.son_checkin = datetime.datetime.utcnow()
     s.commit()
     log_yaz(s, "aktivasyon", kod, hwid, ip, "Basarili aktivasyon")
-    return {"basarili": True, "mesaj": f"Hoş geldiniz, {lisans.musteri_adi}!", "tur": lisans.tur, "bitis_tarihi": lisans.bitis_tarihi.isoformat() if lisans.bitis_tarihi else None}
+    return {"basarili": True, "mesaj": f"Hoş geldiniz, {lisans.musteri_adi}!", "tur": lisans.tur, "bitis_tarihi": lisans.bitis_tarihi.isoformat() if lisans.bitis_tarihi else None, "musteri_adi": lisans.musteri_adi}
 
 @app.post("/api/kontrol", dependencies=[Depends(app_sirri_dogrula)])
 def kontrol(istek: KontrolIstek, request: Request, s: Session = Depends(db)):
@@ -430,7 +448,7 @@ def kontrol(istek: KontrolIstek, request: Request, s: Session = Depends(db)):
     if lisans.bitis_tarihi and datetime.datetime.utcnow() > lisans.bitis_tarihi: return {"gecerli": False, "mesaj": "Süre dolmuştur."}
     lisans.son_checkin = datetime.datetime.utcnow()
     s.commit()
-    return {"gecerli": True, "tur": lisans.tur, "bitis_tarihi": lisans.bitis_tarihi.isoformat() if lisans.bitis_tarihi else None}
+    return {"gecerli": True, "tur": lisans.tur, "bitis_tarihi": lisans.bitis_tarihi.isoformat() if lisans.bitis_tarihi else None, "musteri_adi": lisans.musteri_adi}
 
 # =====================================================================
 # KULLANICI KAYIT/GİRİŞ API
@@ -525,7 +543,10 @@ def profil(request: Request, s: Session = Depends(db)):
     l_bilgi = None
     if lisans:
         durum = "aktif" if lisans.aktif and (not lisans.bitis_tarihi or datetime.datetime.utcnow() <= lisans.bitis_tarihi) else "iptal" if not lisans.aktif else "suresi_dolmus"
-        l_bilgi = {"kod": lisans.lisans_kodu, "tur": lisans.tur, "bitis": lisans.bitis_tarihi.strftime("%d.%m.%Y") if lisans.bitis_tarihi else "Ömür Boyu", "aktif": lisans.aktif, "durum": durum}
+        kalan = (lisans.bitis_tarihi - datetime.datetime.utcnow()).days if lisans.bitis_tarihi else None
+        if kalan is not None and kalan < 0:
+            kalan = 0
+        l_bilgi = {"kod": lisans.lisans_kodu, "tur": lisans.tur, "bitis": lisans.bitis_tarihi.strftime("%d.%m.%Y") if lisans.bitis_tarihi else "Ömür Boyu", "kalan_gun": kalan, "aktif": lisans.aktif, "durum": durum}
     return {"ad_soyad": k.ad_soyad, "email": k.email, "kayit_tar": k.kayit_tar.strftime("%d.%m.%Y"), "lisans": l_bilgi, "indirme_linki": INDIRME_LINKI if (l_bilgi and l_bilgi["durum"]=="aktif") else None}
 
 @app.post("/api/lisansimi-iptal-et")
@@ -564,6 +585,7 @@ class LisansOlusturIstek(BaseModel):
     musteri_email: Optional[str] = None
     tur: str
     deneme_saat: Optional[int] = 24
+    ozel_gun: Optional[int] = None
     notlar: Optional[str] = None
 
 @app.post("/panel/lisans-olustur")
@@ -571,7 +593,15 @@ def lisans_olustur(istek: LisansOlusturIstek, request: Request, bg_tasks: Backgr
     u_tur = s.query(UyelikTuru).filter_by(kod=istek.tur).first()
     prefix = u_tur.prefix if u_tur and hasattr(u_tur, 'prefix') and u_tur.prefix else "STD"
     kod = lisans_kodu_uret(prefix)
-    bitis = bitis_tarihi_hesapla(istek.tur, s, istek.deneme_saat)
+    
+    if istek.ozel_gun is not None:
+        if istek.ozel_gun == 0:
+            bitis = None
+        else:
+            bitis = datetime.datetime.utcnow() + datetime.timedelta(days=istek.ozel_gun)
+    else:
+        bitis = bitis_tarihi_hesapla(istek.tur, s, istek.deneme_saat)
+        
     s.add(Lisans(lisans_kodu=kod, musteri_adi=istek.musteri_adi, musteri_email=istek.musteri_email, tur=istek.tur, bitis_tarihi=bitis, notlar=istek.notlar))
     s.commit()
     istihbarat_raporu(bg_tasks, "Online Lisans Üretildi", user.tam_isim, f"Müşteri: {istek.musteri_adi}\nTür: {istek.tur}\nKod: {kod}", request.client.host)
@@ -605,6 +635,11 @@ def hwid_sifirla(lisans_kodu: str, request: Request, bg_tasks: BackgroundTasks, 
 @app.post("/panel/sure-uzat")
 def sure_uzat(lisans_kodu: str, gun: int, request: Request, bg_tasks: BackgroundTasks, user: PanelUserDto = Depends(yetki_kontrol("sure_uzat")), s: Session = Depends(db)):
     lisans = s.query(Lisans).filter_by(lisans_kodu=lisans_kodu.upper()).first()
+    if not lisans:
+        raise HTTPException(status_code=404, detail="Lisans bulunamadı.")
+    if lisans.bitis_tarihi is None:
+        raise HTTPException(status_code=400, detail="Ömür boyu lisansların süresi uzatılamaz.")
+        
     lisans.bitis_tarihi = max(lisans.bitis_tarihi, datetime.datetime.utcnow()) + datetime.timedelta(days=gun)
     lisans.aktif = True
     s.commit()
@@ -1206,11 +1241,11 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
         <input type="email" id="l-email" placeholder="E-posta (teşekkür maili için)">
         <select id="l-tur">
           <option value="aylik">Aylık (30 gün)</option>
-          <option value="yillik">Yıllık (365 gün)</option>
-          <option value="omur_boyu">Ömür Boyu</option>
-          <option value="deneme">Deneme</option>
         </select>
-        <input type="number" id="l-saat" placeholder="Deneme süresi (saat)" value="24" min="1" max="8760">
+        <div style="display:flex;gap:8px;">
+          <input type="number" id="l-ozel-gun" placeholder="Özel gün sayısı (Opsiyonel)" min="0" style="flex:1;">
+          <input type="number" id="l-saat" placeholder="Deneme (saat)" value="24" min="1" max="8760" style="flex:1;">
+        </div>
         <textarea id="l-not" placeholder="Not"></textarea>
         <button class="btn btn-primary yetki-lisans-olustur" onclick="lisansOlustur()">✚ Oluştur</button>
         <div id="l-sonuc" style="margin-top:10px;font-size:13px;color:#4caf50;font-weight:bold;font-family:monospace;"></div>
@@ -1587,6 +1622,7 @@ function panelGiris() {
         updateGreeting();
         
         document.getElementById("login-overlay").style.display = "none";
+        turleriYukle();
         lisanslariYukle();
         badgeGuncelle();
         // Aktif sayfayı 15 saniyede bir otomatik yenile
@@ -1668,11 +1704,13 @@ async function badgeGuncelle() {
 
 // ===== LİSANSLAR =====
 function lisansOlustur() {
+  const ozel_val = document.getElementById("l-ozel-gun").value;
   const b = {
     musteri_adi: document.getElementById("l-adi").value,
     musteri_email: document.getElementById("l-email").value,
     tur: document.getElementById("l-tur").value,
     deneme_saat: parseInt(document.getElementById("l-saat").value) || 24,
+    ozel_gun: ozel_val !== "" ? parseInt(ozel_val) : null,
     notlar: document.getElementById("l-not").value,
   };
   if (!b.musteri_adi) { notif("Müşteri adı zorunlu!", true); return; }
@@ -2020,7 +2058,9 @@ function turEkle() {
   const kod = document.getElementById("tur-kod").value.trim();
   const ad  = document.getElementById("tur-ad").value.trim();
   const aciklama = document.getElementById("tur-aciklama").value.trim();
-  const sure_gun = parseInt(document.getElementById("tur-sure").value) || 0;
+  const sure_val = document.getElementById("tur-sure").value;
+  if (sure_val === "") { notif("Süre (Gün) zorunludur! Sınırsız için 0 girin.", true); return; }
+  const sure_gun = parseInt(sure_val) || 0;
   const prefix = document.getElementById("tur-prefix").value.trim() || "STD";
   const sira = parseInt(document.getElementById("tur-sira").value) || 99;
   if (!kod || !ad) { notif("Kod ve ad zorunlu!", true); return; }
@@ -2052,6 +2092,11 @@ function turleriYukle() {
           <button class="btn btn-danger btn-sm" onclick="turSil(${t.id})">Sil</button>
         </div>
       </div>`).join("");
+      
+    const ltur = document.getElementById("l-tur");
+    if (ltur) {
+      ltur.innerHTML = liste.filter(t => t.aktif).map(t => `<option value="${t.kod}">${t.ad} (${t.sure_gun === 0 ? 'Ömür Boyu' : t.sure_gun + ' Gün'})</option>`).join("");
+    }
   });
 }
 
@@ -2660,6 +2705,7 @@ async function girisYap() {
       mesajGizle("giris-ok");
       sayfaGoster("dashboard");
       dashboardYukle();
+      baslatSitePoll();
     }, 1200);
   } else {
     // Kullanıcı dostu hata mesajları
@@ -2852,7 +2898,7 @@ async function taleplerYukle() {
     html += `<div style="margin-top:16px;">
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px;">Yeni lisans talep edin:</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
-        ${planlarData.map(p => `<div class="plan-card" id="dp-${p.kod}" onclick="dashPlanSec('${p.kod}')" style="padding:12px 16px;min-width:140px;cursor:pointer;">
+        ${planlarData.map(p => `<div class="plan-card ${dashSecilenPlan === p.kod ? 'selected' : ''}" id="dp-${p.kod}" onclick="dashPlanSec('${p.kod}')" style="padding:12px 16px;min-width:140px;cursor:pointer;">
           <div style="font-size:13px;font-weight:600;">${p.ad}</div>
           <div style="font-size:11px;color:var(--muted);margin-top:3px;">${p.aciklama||""}</div>
         </div>`).join("")}
@@ -2970,6 +3016,19 @@ function mesajGizle(id) {
   if (el) el.style.display = "none";
 }
 
+function baslatSitePoll() {
+  if (_sitePollTimer) return;
+  _sitePollTimer = setInterval(async () => {
+    const isDash = document.getElementById("sayfa-dashboard") &&
+                   document.getElementById("sayfa-dashboard").style.display !== "none";
+    if (!isDash) return;
+    lisansKartiGuncelle();
+    taleplerYukle();
+    lisansGecmisiniYukle();
+    mesajlariYukle();
+  }, 2000);
+}
+
 // Sayfa yüklenince oturum kontrolü
 let _sitePollTimer = null;
 (async function() {
@@ -2978,16 +3037,7 @@ let _sitePollTimer = null;
     sayfaGoster("dashboard");
     const p = await r.json();
     document.getElementById("nav-links").innerHTML = `<span style="font-size:13px;color:var(--muted);margin-right:8px;">${p.email}</span><button class="nav-btn nav-btn-ghost" onclick="cikisYap()">Cıkış</button>`;
-    // 2 saniyede bir sessizce yenile (anlık güncelleme hissi için)
-    _sitePollTimer = setInterval(async () => {
-      const isDash = document.getElementById("sayfa-dashboard") &&
-                     document.getElementById("sayfa-dashboard").style.display !== "none";
-      if (!isDash) return;
-      lisansKartiGuncelle();
-      taleplerYukle();
-      lisansGecmisiniYukle();
-      mesajlariYukle();
-    }, 2000);
+    baslatSitePoll();
   }
 })();
 </script>
