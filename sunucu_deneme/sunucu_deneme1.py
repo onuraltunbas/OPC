@@ -58,7 +58,7 @@ SECRET_KEY         = os.getenv("SECRET_KEY", "BURAYA-GIZLI-ANAHTARINIZI-YAZIN")
 PANEL_KULLANICI    = os.getenv("PANEL_KULLANICI", "admin")
 PANEL_SIFRE        = os.getenv("PANEL_SIFRE", "admin123")
 DATABASE_URL       = os.getenv("DATABASE_URL", "sqlite:///./lisanslar.db")
-INDIRME_LINKI      = os.getenv("INDIRME_LINKI", "/api/program-indir")
+INDIRME_LINKI      = "/api/program-indir"
 
 # TELEGRAM İSTİHBARAT AYARLARI
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -603,7 +603,7 @@ def profil(request: Request, s: Session = Depends(db)):
         "email": k.email, 
         "kayit_tar": safe_format_date(k.kayit_tar), 
         "lisans": l_bilgi, 
-        "indirme_linki": INDIRME_LINKI if (l_bilgi and l_bilgi["durum"]=="aktif") else None,
+        "indirme_linki": "/api/program-indir" if (l_bilgi and l_bilgi["durum"]=="aktif") else None,
         "vt_hash": get_exe_hash(),
         "son_guncelleme": get_exe_date()
     }
