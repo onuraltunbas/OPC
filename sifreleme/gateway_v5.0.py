@@ -54,6 +54,97 @@ from PyQt5.QtCore import QThread, pyqtSignal, QObject, Qt, QTimer
 from PyQt5.QtWidgets import QMessageBox, QDialog
 
 
+GLOBAL_STYLESHEET = """
+QWidget {
+    background-color: #0f1117;
+    color: #e0e0e0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+}
+QGroupBox {
+    background-color: #1a1d2e;
+    border: 1px solid #2a2d3e;
+    border-radius: 6px;
+    margin-top: 14px;
+    font-weight: bold;
+    color: #5b8cff;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    left: 10px;
+}
+QPushButton {
+    background-color: #222540;
+    color: #e0e0e0;
+    border: 1px solid #2a2d3e;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #2a2d3e;
+    border-color: #5b8cff;
+}
+QPushButton:pressed {
+    background-color: #1a1d2e;
+}
+QPushButton:disabled {
+    background-color: #1e2033;
+    color: #666666;
+    border-color: #1e2033;
+}
+QLineEdit, QComboBox, QListWidget, QTextEdit {
+    background-color: #0a0c14;
+    border: 1px solid #2a2d3e;
+    border-radius: 6px;
+    color: #e0e0e0;
+    padding: 6px;
+}
+QLineEdit:focus, QComboBox:focus, QListWidget:focus, QTextEdit:focus {
+    border-color: #5b8cff;
+}
+QListWidget::item:selected {
+    background-color: #5b8cff;
+    color: white;
+    border-radius: 4px;
+}
+QScrollBar:vertical {
+    border: none;
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #2a2d3e;
+    min-height: 20px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #3a3d4e;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar:horizontal {
+    border: none;
+    background: transparent;
+    height: 10px;
+    margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background: #2a2d3e;
+    min-width: 20px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #3a3d4e;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+"""
+
 # =====================================================================
 # BÖLÜM 0: HWID ÜRETİCİ
 # =====================================================================
@@ -688,25 +779,25 @@ class AktivasyonPenceresi(QDialog):
         layout.setContentsMargins(30, 24, 30, 24)
 
         lbl_baslik = QtWidgets.QLabel("Lisans Aktivasyonu Gerekli")
-        lbl_baslik.setStyleSheet("font-size: 16px; font-weight: bold; color: #1565c0;")
+        lbl_baslik.setStyleSheet("font-size: 16px; font-weight: bold; color: #5b8cff; background: transparent;")
         lbl_baslik.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl_baslik)
 
         hwid_frame = QtWidgets.QFrame()
         hwid_frame.setStyleSheet(
-            "background: #f5f5f5; border: 1px solid #ddd; "
+            "background: #1a1d2e; border: 1px solid #2a2d3e; "
             "border-radius: 6px; padding: 8px;"
         )
         hwid_layout = QtWidgets.QVBoxLayout(hwid_frame)
         hwid_layout.setSpacing(4)
 
         lbl_hwid_acik = QtWidgets.QLabel("Bu bilgisayarin donanum kimligi (HWID):")
-        lbl_hwid_acik.setStyleSheet("font-size: 11px; color: #666;")
+        lbl_hwid_acik.setStyleSheet("font-size: 11px; color: #8a9bc0; background: transparent;")
 
         self.lbl_hwid = QtWidgets.QLabel(self.ly.hwid)
         self.lbl_hwid.setStyleSheet(
             "font-family: Consolas, monospace; font-size: 13px; "
-            "font-weight: bold; color: #333; letter-spacing: 1px;"
+            "font-weight: bold; color: #7eb8ff; letter-spacing: 1px; background: transparent; border: none;"
         )
         self.lbl_hwid.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lbl_hwid.setCursor(Qt.IBeamCursor)
@@ -721,7 +812,7 @@ class AktivasyonPenceresi(QDialog):
         layout.addWidget(hwid_frame)
 
         lbl_kod = QtWidgets.QLabel("Lisans kodunuzu girin:")
-        lbl_kod.setStyleSheet("font-size: 12px;")
+        lbl_kod.setStyleSheet("font-size: 12px; background: transparent;")
         layout.addWidget(lbl_kod)
 
         self.txt_kod = QtWidgets.QLineEdit()
@@ -729,23 +820,27 @@ class AktivasyonPenceresi(QDialog):
         self.txt_kod.setFixedHeight(36)
         self.txt_kod.setStyleSheet(
             "font-family: Consolas; font-size: 14px; letter-spacing: 2px; "
-            "border: 1px solid #aaa; border-radius: 4px; padding: 0 8px;"
+            "background: #0a0c14; border: 1px solid #2a2d3e; border-radius: 6px; padding: 0 8px; color: #e0e0e0;"
         )
         layout.addWidget(self.txt_kod)
 
         self.lbl_durum = QtWidgets.QLabel("")
         self.lbl_durum.setAlignment(Qt.AlignCenter)
-        self.lbl_durum.setStyleSheet("font-size: 12px;")
+        self.lbl_durum.setStyleSheet("font-size: 12px; background: transparent;")
         self.lbl_durum.setWordWrap(True)
         self.lbl_durum.setMinimumHeight(36)
         layout.addWidget(self.lbl_durum)
 
         self.btn_aktive = QtWidgets.QPushButton("Aktive Et")
         self.btn_aktive.setFixedHeight(40)
-        self.btn_aktive.setStyleSheet(
-            "background-color: #1565c0; color: white; font-size: 14px; "
-            "font-weight: bold; border-radius: 6px;"
-        )
+        self.btn_aktive.setStyleSheet("""
+            QPushButton {
+                background-color: #5b8cff; color: white; font-size: 14px; 
+                font-weight: bold; border-radius: 6px; border: none;
+            }
+            QPushButton:hover { background-color: #4a7aff; }
+            QPushButton:disabled { background-color: #1e2033; color: #666; }
+        """)
         self.btn_aktive.clicked.connect(self._aktive_et)
         layout.addWidget(self.btn_aktive)
 
@@ -754,18 +849,18 @@ class AktivasyonPenceresi(QDialog):
     def _hwid_kopyala(self):
         QtWidgets.QApplication.clipboard().setText(self.ly.hwid)
         self.lbl_durum.setText("HWID panoya kopyalandi.")
-        self.lbl_durum.setStyleSheet("color: #2e7d32; font-size: 12px;")
+        self.lbl_durum.setStyleSheet("color: #4ade80; font-size: 12px; background: transparent;")
 
     def _aktive_et(self):
         kod = self.txt_kod.text().strip()
         if not kod:
             self.lbl_durum.setText("Lutfen lisans kodunu girin.")
-            self.lbl_durum.setStyleSheet("color: #c62828; font-size: 12px;")
+            self.lbl_durum.setStyleSheet("color: #f87171; font-size: 12px; background: transparent;")
             return
 
         self.btn_aktive.setEnabled(False)
         self.lbl_durum.setText("Sunucuya baglaniliyor...")
-        self.lbl_durum.setStyleSheet("color: #e65100; font-size: 12px;")
+        self.lbl_durum.setStyleSheet("color: #f59e0b; font-size: 12px; background: transparent;")
         QtWidgets.QApplication.processEvents()
 
         def islem():
@@ -783,12 +878,12 @@ class AktivasyonPenceresi(QDialog):
     def _aktivasyon_sonuc(self, basari, mesaj):
         if basari:
             self.lbl_durum.setText(f"Aktivasyon basarili! {mesaj}")
-            self.lbl_durum.setStyleSheet("color: #2e7d32; font-size: 12px;")
+            self.lbl_durum.setStyleSheet("color: #4ade80; font-size: 12px; background: transparent;")
             QTimer.singleShot(1200, self.aktivasyon_basarili.emit)
             QTimer.singleShot(1200, self.accept)
         else:
             self.lbl_durum.setText(f"Hata: {mesaj}")
-            self.lbl_durum.setStyleSheet("color: #c62828; font-size: 12px;")
+            self.lbl_durum.setStyleSheet("color: #f87171; font-size: 12px; background: transparent;")
             self.btn_aktive.setEnabled(True)
 
 
@@ -805,7 +900,6 @@ class OfflineAktivasyonPenceresi(QDialog):
         self.setWindowTitle("OPC Gateway — Çevrimdışı Aktivasyon")
         self.setFixedSize(540, 500)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        self.setStyleSheet("background:#0f1117; color:#e0e0e0;")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(10)
@@ -824,7 +918,7 @@ class OfflineAktivasyonPenceresi(QDialog):
             "İnternet bağlantısı tespit edilmedi.\n"
             "Satıcıdan aldığınız aktivasyon kodunu girin."
         )
-        lbl_acik.setStyleSheet("font-size:11px; color:#888; background:transparent;")
+        lbl_acik.setStyleSheet("font-size:11px; color:#8a9bc0; background:transparent;")
         lbl_acik.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl_acik)
 
@@ -838,21 +932,17 @@ class OfflineAktivasyonPenceresi(QDialog):
         hwid_lay.setSpacing(4)
 
         lbl_hw_t = QtWidgets.QLabel("Donanım Kimliği (HWID Hash):")
-        lbl_hw_t.setStyleSheet("font-size:10px; color:#666; background:transparent;")
+        lbl_hw_t.setStyleSheet("font-size:10px; color:#8a9bc0; background:transparent;")
         self.lbl_hwid = QtWidgets.QLabel(self.oly.hwid_hash)
         self.lbl_hwid.setStyleSheet(
             "font-family:Consolas; font-size:10px; color:#7eb8ff;"
-            "letter-spacing:1px; background:transparent;"
+            "letter-spacing:1px; background:transparent; border:none;"
         )
         self.lbl_hwid.setWordWrap(True)
         self.lbl_hwid.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         btn_hwid_kopyala = QtWidgets.QPushButton("Kopyala")
         btn_hwid_kopyala.setFixedHeight(24)
-        btn_hwid_kopyala.setStyleSheet(
-            "background:#222540; color:#5b8cff; border:1px solid #2a2d3e;"
-            "border-radius:4px; font-size:11px; padding:0 8px;"
-        )
         btn_hwid_kopyala.clicked.connect(
             lambda: QtWidgets.QApplication.clipboard().setText(self.oly.hwid_hash)
         )
@@ -872,12 +962,12 @@ class OfflineAktivasyonPenceresi(QDialog):
         ch_lay.setSpacing(6)
 
         lbl_ch_t = QtWidgets.QLabel("İstek Kodu  (satıcıya gönderin):")
-        lbl_ch_t.setStyleSheet("font-size:10px; color:#666; background:transparent;")
+        lbl_ch_t.setStyleSheet("font-size:10px; color:#8a9bc0; background:transparent;")
 
         self.lbl_challenge = QtWidgets.QLabel("—  (Üret butonuna basın)")
         self.lbl_challenge.setStyleSheet(
             "font-family:Consolas; font-size:14px; font-weight:bold;"
-            "color:#00e676; letter-spacing:2px; background:transparent;"
+            "color:#4ade80; letter-spacing:2px; background:transparent; border:none;"
         )
         self.lbl_challenge.setAlignment(Qt.AlignCenter)
         self.lbl_challenge.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -885,19 +975,18 @@ class OfflineAktivasyonPenceresi(QDialog):
         ch_btn_row = QtWidgets.QHBoxLayout()
         self.btn_uret = QtWidgets.QPushButton("🔄  İstek Kodu Üret")
         self.btn_uret.setFixedHeight(30)
-        self.btn_uret.setStyleSheet(
-            "background:#1b5e20; color:#a5d6a7; border:none;"
-            "border-radius:5px; font-size:12px; font-weight:bold;"
-        )
+        self.btn_uret.setStyleSheet("""
+            QPushButton {
+                background:#5b8cff; color:white; border:none;
+                border-radius:5px; font-size:12px; font-weight:bold;
+            }
+            QPushButton:hover { background:#4a7aff; }
+        """)
         self.btn_uret.clicked.connect(self._challenge_uret)
 
         self.btn_ch_kopyala = QtWidgets.QPushButton("📋 Kopyala")
         self.btn_ch_kopyala.setFixedHeight(30)
         self.btn_ch_kopyala.setEnabled(False)
-        self.btn_ch_kopyala.setStyleSheet(
-            "background:#222540; color:#5b8cff; border:1px solid #2a2d3e;"
-            "border-radius:5px; font-size:12px;"
-        )
         self.btn_ch_kopyala.clicked.connect(
             lambda: QtWidgets.QApplication.clipboard().setText(self._guncel_challenge)
         )
@@ -911,14 +1000,14 @@ class OfflineAktivasyonPenceresi(QDialog):
 
         # — Aktivasyon Kodu girişi —
         lbl_act = QtWidgets.QLabel("Aktivasyon Kodu  (satıcıdan alınan):")
-        lbl_act.setStyleSheet("font-size:11px; color:#aaa; background:transparent;")
+        lbl_act.setStyleSheet("font-size:11px; color:#8a9bc0; background:transparent;")
         layout.addWidget(lbl_act)
 
         self.txt_act = QtWidgets.QLineEdit()
         self.txt_act.setPlaceholderText("ACT-30D-FULL-XXXXXXXXXXXXXXXX")
         self.txt_act.setFixedHeight(38)
         self.txt_act.setStyleSheet(
-            "background:#1a1d2e; border:1px solid #2a2d3e; border-radius:6px;"
+            "background:#0a0c14; border:1px solid #2a2d3e; border-radius:6px;"
             "color:#e0e0e0; font-family:Consolas; font-size:13px;"
             "letter-spacing:1px; padding:0 10px;"
         )
@@ -935,10 +1024,14 @@ class OfflineAktivasyonPenceresi(QDialog):
         # — Aktive Et butonu —
         self.btn_aktive = QtWidgets.QPushButton("✔  Aktive Et")
         self.btn_aktive.setFixedHeight(42)
-        self.btn_aktive.setStyleSheet(
-            "background:#1565c0; color:white; font-size:14px;"
-            "font-weight:bold; border-radius:6px; border:none;"
-        )
+        self.btn_aktive.setStyleSheet("""
+            QPushButton {
+                background:#2e7d32; color:white; font-size:14px;
+                font-weight:bold; border-radius:6px; border:none;
+            }
+            QPushButton:hover { background:#1b5e20; }
+            QPushButton:disabled { background:#1e2033; color:#666; }
+        """)
         self.btn_aktive.clicked.connect(self._aktive_et)
         layout.addWidget(self.btn_aktive)
 
@@ -951,7 +1044,7 @@ class OfflineAktivasyonPenceresi(QDialog):
         self.lbl_challenge.setText(ch)
         self.btn_ch_kopyala.setEnabled(True)
         self.lbl_durum.setText("İstek kodu üretildi. Satıcıya gönderin.")
-        self.lbl_durum.setStyleSheet("color:#00e676; font-size:11px;")
+        self.lbl_durum.setStyleSheet("color:#4ade80; font-size:11px; background:transparent;")
 
     # ── Aktivasyon ──
     def _aktive_et(self):
@@ -965,7 +1058,7 @@ class OfflineAktivasyonPenceresi(QDialog):
 
         self.btn_aktive.setEnabled(False)
         self.lbl_durum.setText("Doğrulanıyor...")
-        self.lbl_durum.setStyleSheet("color:#e65100; font-size:12px;")
+        self.lbl_durum.setStyleSheet("color:#f59e0b; font-size:12px; background:transparent;")
         QtWidgets.QApplication.processEvents()
 
         def islem():
@@ -986,7 +1079,7 @@ class OfflineAktivasyonPenceresi(QDialog):
     def _aktivasyon_sonuc(self, basari, mesaj, yetki):
         if basari:
             self.lbl_durum.setText(f"✅  {mesaj}")
-            self.lbl_durum.setStyleSheet("color:#4caf50; font-size:12px;")
+            self.lbl_durum.setStyleSheet("color:#4ade80; font-size:12px; background:transparent;")
             QTimer.singleShot(1000, lambda: self.aktivasyon_basarili.emit(yetki))
             QTimer.singleShot(1000, self.accept)
         else:
@@ -995,7 +1088,7 @@ class OfflineAktivasyonPenceresi(QDialog):
 
     def _durum_hata(self, mesaj):
         self.lbl_durum.setText(f"❌  {mesaj}")
-        self.lbl_durum.setStyleSheet("color:#c62828; font-size:12px;")
+        self.lbl_durum.setStyleSheet("color:#f87171; font-size:12px; background:transparent;")
 
 
 # =====================================================================
@@ -1051,9 +1144,21 @@ class Ui_MainWindow(object):
         self.txt_ip   = QtWidgets.QLineEdit("0.0.0.0")
         self.txt_port = QtWidgets.QLineEdit("4840")
         self.btn_baslat = QtWidgets.QPushButton("Baslat")
-        self.btn_baslat.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold;")
+        self.btn_baslat.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32; color: white; font-weight: bold; border-radius: 6px; padding: 6px; border: none;
+            }
+            QPushButton:hover { background-color: #1b5e20; }
+            QPushButton:disabled { background-color: #1e2033; color: #666; }
+        """)
         self.btn_durdur = QtWidgets.QPushButton("Durdur")
-        self.btn_durdur.setStyleSheet("background-color: #c62828; color: white; font-weight: bold;")
+        self.btn_durdur.setStyleSheet("""
+            QPushButton {
+                background-color: #c62828; color: white; font-weight: bold; border-radius: 6px; padding: 6px; border: none;
+            }
+            QPushButton:hover { background-color: #b71c1c; }
+            QPushButton:disabled { background-color: #1e2033; color: #666; }
+        """)
         self.btn_durdur.setEnabled(False)
         lay_baslat.addRow("Yayin IP:", self.txt_ip)
         lay_baslat.addRow("Port:", self.txt_port)
@@ -1062,15 +1167,21 @@ class Ui_MainWindow(object):
 
         grp_alt = QtWidgets.QGroupBox("", self.centralwidget)
         grp_alt.setGeometry(20, 120, 220, 60)
-        grp_alt.setStyleSheet("border: none;")
+        grp_alt.setStyleSheet("border: none; background: transparent;")
         lay_alt = QtWidgets.QHBoxLayout(grp_alt)
         self.btn_kurulum_ac = QtWidgets.QPushButton("Sistem Kurulum Merkezi")
+        self.btn_kurulum_ac.setStyleSheet("""
+            QPushButton {
+                background-color: #5b8cff; color: white; font-weight: bold; padding: 8px; border-radius: 6px; border: none;
+            }
+            QPushButton:hover { background-color: #4a7aff; }
+        """)
         lay_alt.addWidget(self.btn_kurulum_ac)
 
         self.lbl_lisans = QtWidgets.QLabel("")
         self.lbl_lisans.setGeometry(20, 183, 780, 20)
         self.lbl_lisans.setParent(self.centralwidget)
-        self.lbl_lisans.setStyleSheet("color: #555; font-size: 11px;")
+        self.lbl_lisans.setStyleSheet("color: #8a9bc0; font-size: 11px; background: transparent;")
         self.lbl_lisans.setAlignment(Qt.AlignRight)
 
         grp_konsol = QtWidgets.QGroupBox("Canli Veri / Log Ekrani", self.centralwidget)
@@ -1079,8 +1190,8 @@ class Ui_MainWindow(object):
         self.txt_konsol = QtWidgets.QTextEdit()
         self.txt_konsol.setReadOnly(True)
         self.txt_konsol.setStyleSheet(
-            "background: #0d0d0d; color: #00ff41; "
-            "font-family: Consolas, 'Courier New'; font-size: 12px;"
+            "background: #0a0c14; color: #4ade80; "
+            "font-family: Consolas, 'Courier New'; font-size: 12px; border: 1px solid #2a2d3e; border-radius: 6px;"
         )
         lay_konsol.addWidget(self.txt_konsol)
 
@@ -1104,25 +1215,30 @@ class KurulumPenceresi(QtWidgets.QWidget):
         self.lbl_mimari.setAlignment(Qt.AlignCenter)
         if sys.maxsize > 2**32:
             self.lbl_mimari.setText("UYARI: 64-Bit Python! OPC DA icin 32-Bit Python gerekli.")
-            self.lbl_mimari.setStyleSheet("color: #e65100; font-weight: bold; padding: 4px;")
+            self.lbl_mimari.setStyleSheet("color: #f59e0b; font-weight: bold; padding: 4px; background: transparent;")
         else:
             self.lbl_mimari.setText("32-Bit Python -- OPC DA uyumlu.")
-            self.lbl_mimari.setStyleSheet("color: #2e7d32; font-weight: bold; padding: 4px;")
+            self.lbl_mimari.setStyleSheet("color: #4ade80; font-weight: bold; padding: 4px; background: transparent;")
         layout.addWidget(self.lbl_mimari)
 
         self.adimlar = [
-            ("0. Python 3.13 (32-bit) Indir & Kur", self.python_indir_ve_kur, "#1565c0"),
-            ("1. Kutuphaneleri Kur (PIP)",            self.kutuphaneleri_kur,  "#4a148c"),
-            ("2. Windows DLL'lerini Kaydet",          self.dll_kaydet,         "#1b5e20"),
+            ("0. Python 3.13 (32-bit) Indir & Kur", self.python_indir_ve_kur, "#5b8cff", "#4a7aff"),
+            ("1. Kutuphaneleri Kur (PIP)",            self.kutuphaneleri_kur,  "#5b8cff", "#4a7aff"),
+            ("2. Windows DLL'lerini Kaydet",          self.dll_kaydet,         "#5b8cff", "#4a7aff"),
         ]
         self.durum_lbller = []
-        for metin, slot, renk in self.adimlar:
+        for metin, slot, renk, hover_renk in self.adimlar:
             h = QtWidgets.QHBoxLayout()
             btn = QtWidgets.QPushButton(metin)
-            btn.setStyleSheet(f"background-color: {renk}; color: white; font-weight: bold; padding: 6px;")
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {renk}; color: white; font-weight: bold; padding: 8px; border-radius: 6px; border: none;
+                }}
+                QPushButton:hover {{ background-color: {hover_renk}; }}
+            """)
             btn.clicked.connect(slot)
             lbl = QtWidgets.QLabel("Bekliyor")
-            lbl.setStyleSheet("color: gray; min-width: 120px;")
+            lbl.setStyleSheet("color: #8a9bc0; min-width: 120px; background: transparent;")
             lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.durum_lbller.append(lbl)
             h.addWidget(btn, stretch=3)
@@ -1131,7 +1247,7 @@ class KurulumPenceresi(QtWidgets.QWidget):
 
         self.kurulum_log = QtWidgets.QTextEdit()
         self.kurulum_log.setReadOnly(True)
-        self.kurulum_log.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas;")
+        self.kurulum_log.setStyleSheet("background-color: #0a0c14; color: #e0e0e0; font-family: Consolas; border: 1px solid #2a2d3e; border-radius: 6px; padding: 4px;")
         layout.addWidget(self.kurulum_log)
         self._kendi_log = LogKoprusu(self.kurulum_log)
 
@@ -1139,12 +1255,15 @@ class KurulumPenceresi(QtWidgets.QWidget):
         self._kendi_log.yaz(metin)
 
     def _durum_guncelle(self, idx, metin, renk):
+        if renk == "orange": renk = "#f59e0b"
+        elif renk == "green": renk = "#4ade80"
+        elif renk == "red": renk = "#f87171"
         QtCore.QMetaObject.invokeMethod(
             self.durum_lbller[idx], "setText",
             Qt.QueuedConnection, QtCore.Q_ARG(str, metin))
         QtCore.QMetaObject.invokeMethod(
             self.durum_lbller[idx], "setStyleSheet",
-            Qt.QueuedConnection, QtCore.Q_ARG(str, f"color: {renk}; font-weight: bold;"))
+            Qt.QueuedConnection, QtCore.Q_ARG(str, f"color: {renk}; font-weight: bold; background: transparent;"))
 
     def python_indir_ve_kur(self):
         url  = "https://www.python.org/ftp/python/3.13.3/python-3.13.3.exe"
@@ -1680,6 +1799,7 @@ def uygulamayi_baslat():
         pass
 
     app.setStyle("Fusion")
+    app.setStyleSheet(GLOBAL_STYLESHEET)
 
     # ── İnternet kontrolü ──
     splash = QtWidgets.QDialog()
