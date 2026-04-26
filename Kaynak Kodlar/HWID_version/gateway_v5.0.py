@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-OPC DA -> OPC UA Gateway v4.1
+OPC DA - OPC UA Gateway v4.1
 HWID + Online Aktivasyon Lisans Sistemi (Model B)
 v4.1: "detail"/"mesaj" anahtar uyumsuzlugu duzeltildi
 """
