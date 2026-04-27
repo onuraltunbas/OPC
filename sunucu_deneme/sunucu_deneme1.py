@@ -787,7 +787,21 @@ def lisans_gecmisim(request: Request, s: Session = Depends(db)):
         aktif = l.aktif
         kalan = safe_days_left(l.bitis_tarihi)
         durum = "aktif" if aktif and (kalan is None or kalan >= 0) else "iptal" if not aktif else "suresi_dolmus"
-        sonuc.append({"kod": l.lisans_kodu, "tur": l.tur, "durum": durum, "olusturma": safe_format_date(l.olusturma_tar), "bitis": safe_format_date(l.bitis_tarihi) if l.bitis_tarihi else "Ömür Boyu", "aktivasyon": safe_format_date(l.aktivasyon_tar) if l.aktivasyon_tar else None})
+        # notlar formatı: "offline|REQ-XXX" veya "offline" veya None
+        notlar = l.notlar or ""
+        is_offline = notlar == "offline" or notlar.startswith("offline|")
+        istek_kodu = notlar.split("|", 1)[1] if "|" in notlar else None
+        sonuc.append({
+            "kod": l.lisans_kodu,
+            "tur": l.tur,
+            "durum": durum,
+            "olusturma": safe_format_date(l.olusturma_tar),
+            "bitis": safe_format_date(l.bitis_tarihi) if l.bitis_tarihi else "Ömür Boyu",
+            "aktivasyon": safe_format_date(l.aktivasyon_tar) if l.aktivasyon_tar else None,
+            "kalan_gun": kalan,
+            "tip": "offline" if is_offline else "online",
+            "istek_kodu": istek_kodu
+        })
     return sonuc
 
 @app.get("/api/uyelik-turleri-public")
@@ -903,6 +917,17 @@ async def talep_guncelle(request: Request, bg_tasks: BackgroundTasks, user: Pane
             imza = hmac.new(OFFLINE_SECRET_KEY, mesaj, hashlib.sha256).hexdigest()[:16].upper()
             akt_kod = f"ACT-{sure}D-FULL-{imza}"
             talep.aktivasyon_kodu = akt_kod
+            # Offline lisansı Lisans tablosuna da kaydet — geçmişte görünsün
+            bitis_offline = datetime.datetime.utcnow() + datetime.timedelta(days=sure)
+            s.add(Lisans(
+                lisans_kodu=akt_kod,
+                musteri_adi=talep.ad_soyad,
+                musteri_email=talep.email,
+                tur=talep.tur,
+                bitis_tarihi=bitis_offline,
+                notlar=f"offline|{talep.istek_kodu}",
+                aktif=True
+            ))
             s.commit()
             istihbarat_raporu(bg_tasks, "Offline Talep Onaylandı", user.tam_isim, f"Müşteri: {talep.ad_soyad}\nİstek Kodu: {talep.istek_kodu}\nAktivasyon Kodu: {akt_kod}", request.client.host)
         else:
@@ -3235,8 +3260,14 @@ async function taleplerYukle() {
     </div>`;
   }
   document.getElementById("talep-icerik").innerHTML = html;
-  // Re-render sonrası REQ durum göstergesini güncelle
-  if (_dashTalepTipi === 'offline' && _dashReqKodu) dashReqKodKontrol();
+  // Re-render sonrası kaydedilen REQ kodunu input'a geri yaz (polling sırasında silinmesin)
+  if (_dashTalepTipi === 'offline' && _dashReqKodu) {
+    const reqEl = document.getElementById("talep-istek-kodu");
+    if (reqEl && reqEl !== document.activeElement) {
+      reqEl.value = _dashReqKodu;
+    }
+    dashReqKodKontrol();
+  }
 }
 
 function talepTipiDegisti() {
@@ -3306,7 +3337,7 @@ function offReqKodKontrol() {
 
 async function offlineTalepGonder() {
   mesajGizle("offline-hata"); mesajGizle("offline-ok");
-  const tur       = document.getElementById("off-tur-sec")  ? document.getElementById("off-tur-sec").value.trim()  : "";
+  const tur        = document.getElementById("off-tur-sec")  ? document.getElementById("off-tur-sec").value.trim()  : "";
   const istek_kodu = (document.getElementById("off-req-kod").value || "").trim().toUpperCase();
   if (!tur)        { mesajGoster("offline-hata", "⚠️ Lütfen bir lisans türü seçin."); return; }
   if (!istek_kodu) { mesajGoster("offline-hata", "⚠️ İstek kodu zorunludur."); return; }
@@ -3320,7 +3351,7 @@ async function offlineTalepGonder() {
   const d = await r.json();
   if (btn) { btn.disabled = false; btn.textContent = "Offline Lisans Talebi Gönder"; }
   if (r.ok) {
-    mesajGoster("offline-ok", "✅ Talebiniz alındı! Onaylandığında aktivasyon kodunuz e-posta ile bildirilecektir. Dashboard üzerinden de takip edebilirsiniz.");
+    mesajGoster("offline-ok", "✅ Talebiniz alındı! Onaylandığında aktivasyon kodunuz lisans geçmişinizde görünecektir.");
     document.getElementById("off-req-kod").value = "";
     document.getElementById("off-req-durum").textContent = "";
   } else {
@@ -3362,7 +3393,7 @@ async function talepGonder() {
 
   if (r.ok) {
     mesajGoster("talep-ok", talep_tipi === "offline"
-      ? "✅ Offline lisans talebiniz alındı! Onaylandığında aktivasyon kodunuz bu sayfada görünecektir."
+      ? "✅ Offline lisans talebiniz alındı! Onaylandığında lisans geçmişinizde görünecektir."
       : "✅ Talebiniz başarıyla gönderildi!"
     );
     taleplerYukle();
@@ -3390,26 +3421,35 @@ async function lisansGecmisiniYukle() {
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead>
         <tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
-          <th style="padding:8px 12px;text-align:left;">Lisans Kodu</th>
+          <th style="padding:8px 12px;text-align:left;">Lisans / ACT Kodu</th>
           <th style="padding:8px 12px;text-align:left;">Tür</th>
+          <th style="padding:8px 12px;text-align:left;">Tip</th>
+          <th style="padding:8px 12px;text-align:left;">İstek Kodu (REQ)</th>
           <th style="padding:8px 12px;text-align:left;">Durum</th>
           <th style="padding:8px 12px;text-align:left;">Oluşturulma</th>
           <th style="padding:8px 12px;text-align:left;">Bitiş</th>
-          <th style="padding:8px 12px;text-align:left;">Aktivasyon</th>
         </tr>
       </thead>
       <tbody>
         ${liste.map(l => {
           const d = durumBilgi[l.durum] || { cls: '', yazi: l.durum };
-          const ikon = turIkon[l.tur] || '🔑';
+          const ikon = l.tip === 'offline' ? '🔒' : (turIkon[l.tur] || '🔑');
           const kalanTxt = l.kalan_gun != null ? ` · ${l.kalan_gun} gün kaldı` : '';
+          const kodRenk = l.tip === 'offline' ? '#4ade80' : '#7eb8ff';
+          const tipBadge = l.tip === 'offline'
+            ? `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:#22c55e15;color:#4ade80;border:1px solid #22c55e44;">🔒 OFFLİNE</span>`
+            : `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:#3d6fff15;color:#7eb8ff;border:1px solid #3d6fff44;">🌐 ONLİNE</span>`;
+          const istekKoduCell = l.tip === 'offline' && l.istek_kodu
+            ? `<code style="font-family:monospace;font-size:11px;background:var(--bg);padding:2px 6px;border-radius:4px;color:#a78bfa;">${l.istek_kodu}</code>`
+            : `<span style="color:var(--muted);">—</span>`;
           return `<tr style="border-top:1px solid var(--border);">
-            <td style="padding:10px 12px;"><code style="font-family:monospace;font-size:12px;background:var(--bg);padding:3px 8px;border-radius:4px;color:#7eb8ff;">${l.kod}</code></td>
+            <td style="padding:10px 12px;"><code style="font-family:monospace;font-size:12px;background:var(--bg);padding:3px 8px;border-radius:4px;color:${kodRenk};">${l.kod}</code></td>
             <td style="padding:10px 12px;">${ikon} ${l.tur.replace('_',' ')}</td>
+            <td style="padding:10px 12px;">${tipBadge}</td>
+            <td style="padding:10px 12px;">${istekKoduCell}</td>
             <td style="padding:10px 12px;"><span class="badge-sm ${d.cls}" style="white-space:nowrap;">${d.yazi}${kalanTxt}</span></td>
             <td style="padding:10px 12px;color:var(--muted);">${l.olusturma}</td>
-            <td style="padding:10px 12px;color:${l.durum==='suresi_dolmus'?'#f87171':'var(--muted)'}">${l.bitis}</td>
-            <td style="padding:10px 12px;color:var(--muted);">${l.aktivasyon || '—'}</td>
+            <td style="padding:10px 12px;color:${l.durum==='suresi_dolmus'?'#f87171':'var(--muted)'};">${l.bitis}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -3461,7 +3501,9 @@ function baslatSitePoll() {
                    document.getElementById("sayfa-dashboard").style.display !== "none";
     if (!isDash) return;
     lisansKartiGuncelle();
-    taleplerYukle();
+    // taleplerYukle() polling'den ÇIKARILDI — form her 2 sn'de yeniden render edilince
+    // kullanıcının girdiği REQ kodu siliniyor. Talepler sadece dashboard açılışında
+    // ve talep gönderildiğinde yüklenir. Kullanıcı manuel "↻ Yenile" butonu kullanabilir.
     lisansGecmisiniYukle();
     mesajlariYukle();
   }, 2000);

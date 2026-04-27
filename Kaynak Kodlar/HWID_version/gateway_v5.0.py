@@ -1540,6 +1540,28 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self.setWindowTitle(baslik)
 
     def _lisans_bilgisi_goster(self):
+        # Offline modda self.ly = None; offline lisans bilgisini göster
+        if self.ly is None:
+            try:
+                oly = OfflineLisansYoneticisi()
+                bilgi = oly.lisans_bilgisi()
+                if bilgi:
+                    bitis_ts = bilgi.get("bitis_ts", 0)
+                    yetki    = bilgi.get("yetki", self._offline_yetki)
+                    if bitis_ts > 0:
+                        bitis_dt = datetime.datetime.fromtimestamp(bitis_ts)
+                        kalan = max(0, int((bitis_ts - time.time()) / 86400))
+                        self.lbl_lisans.setText(
+                            f"[OFFLİNE] Yetki: {yetki} | "
+                            f"Bitis: {bitis_dt.strftime('%d.%m.%Y')} ({kalan} gun kaldi)"
+                        )
+                    else:
+                        self.lbl_lisans.setText(f"[OFFLİNE] Yetki: {yetki}")
+            except Exception:
+                self.lbl_lisans.setText(f"[OFFLİNE] Yetki: {self._offline_yetki}")
+            return
+
+        # Online mod
         bilgi = self.ly.lisans_bilgisi()
         if not bilgi:
             return
