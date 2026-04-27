@@ -434,11 +434,25 @@ def get_kullanici_id(request: Request) -> Optional[str]:
 # =====================================================================
 app = FastAPI(title="OPC Gateway", docs_url=None, redoc_url=None)
 
+# CORS configuration: set `CORS_ALLOWED_ORIGINS` env var as comma-separated list.
+# If you need cookie-based sessions from a frontend on another origin, set
+# CORS_ALLOWED_ORIGINS to the frontend origin(s) (not "*") and the frontend
+# must send requests with `credentials: 'include'`.
+_cors_origins = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
+_cors_list = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+# If the special value '*' is provided, keep it but browsers will ignore cookies
+# for wildcard origins, so allow_credentials must be False in that case.
+if len(_cors_list) == 1 and _cors_list[0] == "*":
+  _allow_credentials = False
+else:
+  _allow_credentials = True
+
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+  CORSMiddleware,
+  allow_origins=_cors_list,
+  allow_credentials=_allow_credentials,
+  allow_methods=["*"],
+  allow_headers=["*"],
 )
 
 @app.exception_handler(Exception)
@@ -582,36 +596,54 @@ def kontrol(istek: KontrolIstek, request: Request, s: Session = Depends(db)):
 # =====================================================================
 @app.post("/api/kayit")
 async def kayit_ol(request: Request, bg_tasks: BackgroundTasks, s: Session = Depends(db)):
-    data = await request.json()
+    # Accept both JSON and form-encoded submissions from various frontends
+    try:
+        data = await request.json()
+    except Exception:
+        form = await request.form()
+        data = dict(form)
+
     ad_soyad = data.get("ad_soyad", "").strip()
     email = data.get("email", "").strip().lower()
     sifre = data.get("sifre", "")
-    if not ad_soyad or not email or not sifre: raise HTTPException(status_code=400, detail="Eksik alan.")
-    if s.query(Kullanici).filter_by(email=email).first(): raise HTTPException(status_code=409, detail="Kayıtlı e-posta.")
+
+    if not ad_soyad or not email or not sifre:
+        raise HTTPException(status_code=400, detail="Eksik alan.")
+    if s.query(Kullanici).filter_by(email=email).first():
+        raise HTTPException(status_code=409, detail="Kayıtlı e-posta.")
 
     k = Kullanici(ad_soyad=ad_soyad, email=email, sifre_hash=sifre_hashle(sifre), email_dogrulandi=True, son_ip=request.client.host)
     s.add(k)
     s.commit()
-    
+
     # 🕵️ İstihbarat Raporu
     istihbarat_raporu(bg_tasks, "Yeni Kullanıcı Kaydı", ad_soyad, f"E-posta: {email}", request.client.host)
     return {"basarili": True, "mesaj": "Kayıt başarılı!"}
 
 @app.post("/api/giris")
 async def giris_yap(request: Request, response: Response, bg_tasks: BackgroundTasks, s: Session = Depends(db)):
-    data = await request.json()
+    # Accept JSON and form data
+    try:
+        data = await request.json()
+    except Exception:
+        form = await request.form()
+        data = dict(form)
+
     email = data.get("email", "").strip().lower()
     k = s.query(Kullanici).filter_by(email=email, sifre_hash=sifre_hashle(data.get("sifre", ""))).first()
-    if not k: raise HTTPException(status_code=401, detail="Yanlış şifre.")
-    
+    if not k:
+        raise HTTPException(status_code=401, detail="Yanlış şifre.")
+
     token = session_olustur(k.id)
     k.son_giris = datetime.datetime.utcnow()
     k.son_ip = request.client.host
     s.commit()
-    
+
     istihbarat_raporu(bg_tasks, "Müşteri Girişi", k.ad_soyad, f"Müşteri panele giriş yaptı. ({k.email})", request.client.host)
-    
-    resp = JSONResponse({"basarili": True})
+
+    # Return the token in the JSON body in addition to setting a cookie so
+    # frontends that cannot rely on cross-site cookies can still operate.
+    resp = JSONResponse({"basarili": True, "token": token, "kullanici_id": k.id})
     resp.set_cookie("session", token, httponly=True, max_age=604800, samesite="lax")
     return resp
 
@@ -2882,7 +2914,7 @@ async function planlariYukle() {
     </div>`).join("");
 }
 
-let secilenPlan = null;
+var secilenPlan = null;
 function planSec(kod) {
   secilenPlan = kod;
   document.querySelectorAll(".plan-card").forEach(c => c.classList.remove("selected"));
@@ -3134,7 +3166,7 @@ async function lisansImIptalEt() {
 }
 
 // Global state - poll yenilemesinde offline seçimi ve REQ kodu kaybolmasın
-let dashSecilenPlan = null;
+// var dashSecilenPlan = null;
 let _dashTalepTipi  = "online";
 let _dashReqKodu    = "";
 
@@ -3231,7 +3263,7 @@ function dashReqKodKontrol() {
   }
 }
 
-let dashSecilenPlan = null;
+var dashSecilenPlan = null;
 function dashPlanSec(kod) {
   dashSecilenPlan = kod;
   document.querySelectorAll("[id^='dp-']").forEach(c => c.classList.remove("selected"));
