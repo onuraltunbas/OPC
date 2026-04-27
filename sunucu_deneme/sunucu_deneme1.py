@@ -2649,7 +2649,6 @@ SITE_HTML_TEMPLATE = """<!DOCTYPE html>
     OPC Gateway
   </div>
   <div class="nav-links" id="nav-links">
-    <button class="nav-btn nav-btn-ghost" onclick="sayfaGoster('offline')" style="border-color:#3d6fff44;color:#7eb8ff;">🔒 Offline Aktivasyon</button>
     <button class="nav-btn nav-btn-ghost" onclick="sayfaGoster('giris')">Giriş Yap</button>
     <button class="nav-btn nav-btn-primary" onclick="sayfaGoster('kayit')">Kayıt Ol</button>
   </div>
@@ -3100,8 +3099,7 @@ function iptalModalAc() {
   document.getElementById("iptal-aciklama").value = "";
   const hataEl = document.getElementById("iptal-hata");
   if (hataEl) hataEl.style.display = "none";
-  const m = document.getElementById("iptal-modal");
-  m.style.display = "flex";
+  document.getElementById("iptal-modal").style.display = "flex";
 }
 
 function iptalModalKapat() {
@@ -3126,7 +3124,6 @@ async function lisansImIptalEt() {
   const d = await r.json();
   if (r.ok) {
     iptalModalKapat();
-    // Kartı ve geçmişi güncelle
     lisansKartiGuncelle();
     lisansGecmisiniYukle();
     taleplerYukle();
@@ -3136,7 +3133,14 @@ async function lisansImIptalEt() {
   }
 }
 
+// Global state - poll yenilemesinde offline seçimi ve REQ kodu kaybolmasın
+let dashSecilenPlan = null;
+let _dashTalepTipi  = "online";
+let _dashReqKodu    = "";
+
+
 async function taleplerYukle() {
+
   const r = await fetch("/api/benim-taleplerim");
   const talepler = await r.json();
   const durumBadge = {beklemede:"b-bekl",onaylandi:"b-onay",reddedildi:"b-red"};
@@ -3163,13 +3167,13 @@ async function taleplerYukle() {
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px;">Yeni lisans talep edin:</div>
 
       <div style="display:flex;gap:0;margin-bottom:16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);overflow:hidden;">
-        <label style="flex:1;font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 16px;transition:background 0.15s;" id="lbl-online">
-          <input type="radio" name="talep_tipi" value="online" checked onchange="talepTipiDegisti()">
+        <label style="flex:1;font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 16px;" id="lbl-online">
+          <input type="radio" name="talep_tipi" value="online" ${_dashTalepTipi !== 'offline' ? 'checked' : ''} onchange="talepTipiDegisti()">
           <span>🌐</span> <span>Online Lisans</span>
         </label>
         <div style="width:1px;background:var(--border);"></div>
-        <label style="flex:1;font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 16px;transition:background 0.15s;" id="lbl-offline">
-          <input type="radio" name="talep_tipi" value="offline" onchange="talepTipiDegisti()">
+        <label style="flex:1;font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 16px;" id="lbl-offline">
+          <input type="radio" name="talep_tipi" value="offline" ${_dashTalepTipi === 'offline' ? 'checked' : ''} onchange="talepTipiDegisti()">
           <span>🔒</span> <span>Offline Lisans</span>
         </label>
       </div>
@@ -3181,31 +3185,36 @@ async function taleplerYukle() {
         </div>`).join("")}
       </div>
 
-      <div id="offline-istek-alan" style="display:none;margin-bottom:14px;background:#3d6fff08;border:1px solid #3d6fff22;border-radius:8px;padding:14px;">
+      <div id="offline-istek-alan" style="display:${_dashTalepTipi === 'offline' ? '' : 'none'};margin-bottom:14px;background:#3d6fff08;border:1px solid #3d6fff22;border-radius:8px;padding:14px;">
         <label style="font-size:12px;color:#8a9bc0;display:block;margin-bottom:6px;font-weight:600;">Gateway İstek Kodu</label>
         <input type="text" id="talep-istek-kodu" placeholder="REQ-XXXXXXXXXXXXXXXXXXXX"
           class="form-input" style="font-family:monospace;letter-spacing:1px;max-width:360px;margin-bottom:4px;"
-          oninput="dashReqKodKontrol()">
+          value="${_dashReqKodu.replace(/"/g, '&quot;')}"
+          oninput="_dashReqKodu=this.value;dashReqKodKontrol()">
         <div id="dash-req-durum" style="font-size:12px;min-height:18px;"></div>
         <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6;">
           📌 İstek kodunu almak için <b>OPC Gateway Pro</b> programını açıp <b>Offline Aktivasyon → İstek Kodu Oluştur</b> seçeneğini kullanın.
         </div>
       </div>
 
-      <button class="form-btn" id="talep-gonder-btn" style="max-width:220px;padding:10px;" onclick="talepGonder()">Talep Gönder</button>
+      <button class="form-btn" id="talep-gonder-btn" style="max-width:220px;padding:10px;" onclick="talepGonder()">${_dashTalepTipi === 'offline' ? '🔒 Offline Talep Gönder' : '🌐 Online Talep Gönder'}</button>
       <div class="form-err" id="talep-hata" style="margin-top:10px;"></div>
       <div class="form-ok" id="talep-ok" style="margin-top:10px;"></div>
     </div>`;
   }
   document.getElementById("talep-icerik").innerHTML = html;
+  // Re-render sonrası REQ durum göstergesini güncelle
+  if (_dashTalepTipi === 'offline' && _dashReqKodu) dashReqKodKontrol();
 }
 
 function talepTipiDegisti() {
-  const tip = document.querySelector('input[name="talep_tipi"]:checked').value;
+  const tip = document.querySelector('input[name="talep_tipi"]:checked');
+  if (!tip) return;
+  _dashTalepTipi = tip.value; // Global state'i güncelle
   const alan = document.getElementById("offline-istek-alan");
   const btn  = document.getElementById("talep-gonder-btn");
-  if (alan) alan.style.display = tip === "offline" ? "" : "none";
-  if (btn)  btn.textContent   = tip === "offline" ? "🔒 Offline Talep Gönder" : "🌐 Online Talep Gönder";
+  if (alan) alan.style.display = tip.value === "offline" ? "" : "none";
+  if (btn)  btn.textContent   = tip.value === "offline" ? "🔒 Offline Talep Gönder" : "🌐 Online Talep Gönder";
 }
 
 function dashReqKodKontrol() {
@@ -3294,7 +3303,7 @@ async function talepGonder() {
   const tipEl      = document.querySelector('input[name="talep_tipi"]:checked');
   const talep_tipi = tipEl ? tipEl.value : "online";
   const istekEl    = document.getElementById("talep-istek-kodu");
-  const istek_kodu = istekEl ? istekEl.value.trim().toUpperCase() : "";
+  const istek_kodu = istekEl ? istekEl.value.trim().toUpperCase() : _dashReqKodu.trim().toUpperCase();
 
   if (talep_tipi === "offline") {
     if (!istek_kodu) {
