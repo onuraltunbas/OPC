@@ -118,6 +118,10 @@ class Lisans(Base):
     aktivasyon_tar = Column(DateTime, nullable=True)
     iptal_nedeni   = Column(Text, nullable=True)
     iptal_tarihi   = Column(DateTime, nullable=True)
+    uretilen_tip   = Column(String, default="online")
+    istek_kodu_db  = Column(String, nullable=True)
+    sure_gun_db    = Column(Integer, nullable=True)
+    yetki_seviyesi = Column(String, nullable=True)
 
 class Log(Base):
     __tablename__ = "loglar"
@@ -203,6 +207,8 @@ class PanelKullanici(Base):
     yetki_ip_ban = Column(Boolean, default=False)
     yetki_uyelik_tur = Column(Boolean, default=False)
     yetki_offline_lisans = Column(Boolean, default=False)
+    telegram_chat_id = Column(String, nullable=True)
+    telegram_bildirim_alabilir = Column(Boolean, default=False)
     son_giris = Column(DateTime, nullable=True)
     son_cikis = Column(DateTime, nullable=True)
 
@@ -248,6 +254,12 @@ def _db_migrate():
         f"ALTER TABLE lisans_talepler ADD COLUMN {_ifne}talep_tipi VARCHAR(20) DEFAULT 'online'",
         f"ALTER TABLE lisans_talepler ADD COLUMN {_ifne}istek_kodu VARCHAR(100)",
         f"ALTER TABLE lisans_talepler ADD COLUMN {_ifne}aktivasyon_kodu VARCHAR(100)",
+        f"ALTER TABLE panel_kullanicilari ADD COLUMN {_ifne}telegram_chat_id VARCHAR(100)",
+        f"ALTER TABLE panel_kullanicilari ADD COLUMN {_ifne}telegram_bildirim_alabilir BOOLEAN DEFAULT false",
+        f"ALTER TABLE lisanslar ADD COLUMN {_ifne}uretilen_tip VARCHAR(20) DEFAULT 'online'",
+        f"ALTER TABLE lisanslar ADD COLUMN {_ifne}istek_kodu_db VARCHAR(100)",
+        f"ALTER TABLE lisanslar ADD COLUMN {_ifne}sure_gun_db INTEGER",
+        f"ALTER TABLE lisanslar ADD COLUMN {_ifne}yetki_seviyesi VARCHAR(50)",
     ]
 
     for sql in _migrations:
@@ -302,7 +314,7 @@ def get_ip_konum(ip: str) -> str:
 def istihbarat_raporu(bg_tasks: BackgroundTasks, islem_turu: str, actor: str, detay: str, ip: str):
     """Telegrama asenkron olarak log fırlatır."""
     def gorev():
-        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+        if not TELEGRAM_BOT_TOKEN: return
         konum = get_ip_konum(ip)
         zaman = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%d.%m.%Y - %H:%M:%S")
         
@@ -314,13 +326,30 @@ def istihbarat_raporu(bg_tasks: BackgroundTasks, islem_turu: str, actor: str, de
             f"🌐 <b>IP & Konum:</b> {ip} ({konum})\n"
             f"🕒 <b>Tarih:</b> {zaman}"
         )
+        
+        chat_ids = []
+        if TELEGRAM_CHAT_ID:
+            chat_ids.append(TELEGRAM_CHAT_ID)
+            
+        s = Session_()
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": mesaj, "parse_mode": "HTML"}).encode("utf-8")
-            req = urllib.request.Request(url, data=data)
-            urllib.request.urlopen(req, timeout=4)
+            users = s.query(PanelKullanici).filter_by(telegram_bildirim_alabilir=True).all()
+            for u in users:
+                if u.telegram_chat_id and u.telegram_chat_id not in chat_ids:
+                    chat_ids.append(u.telegram_chat_id)
         except Exception:
             pass
+        finally:
+            s.close()
+
+        for cid in chat_ids:
+            try:
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                data = urllib.parse.urlencode({"chat_id": cid, "text": mesaj, "parse_mode": "HTML"}).encode("utf-8")
+                req = urllib.request.Request(url, data=data)
+                urllib.request.urlopen(req, timeout=4)
+            except Exception:
+                pass
             
     if bg_tasks:
         bg_tasks.add_task(gorev)
@@ -982,7 +1011,11 @@ def lisanslar_listele(filtre: str = "hepsi", user: PanelUserDto = Depends(panel_
             "bitis_tarihi": l.bitis_tarihi.strftime("%d.%m.%Y") if l.bitis_tarihi else "Ömür boyu",
             "son_checkin": l.son_checkin.strftime("%d.%m.%Y") if l.son_checkin else "Hiç",
             "aktivasyon": l.aktivasyon_tar.strftime("%d.%m.%Y") if l.aktivasyon_tar else "Yok",
-            "notlar": l.notlar or "", "iptal_nedeni": l.iptal_nedeni or ""
+            "notlar": l.notlar or "", "iptal_nedeni": l.iptal_nedeni or "",
+            "uretilen_tip": getattr(l, "uretilen_tip", "online") or "online",
+            "istek_kodu": getattr(l, "istek_kodu_db", "") or "",
+            "sure_gun": getattr(l, "sure_gun_db", "") or "",
+            "yetki": getattr(l, "yetki_seviyesi", "") or ""
         })
     return sonuc
 
@@ -1011,6 +1044,38 @@ def kullanici_sil(kullanici_id: str, request: Request, bg_tasks: BackgroundTasks
     s.commit()
     istihbarat_raporu(bg_tasks, "Müşteri Silindi", user.tam_isim, f"Silinen: {k.ad_soyad} ({k.email})", request.client.host)
     return {"mesaj": f"Kullanıcı silindi."}
+
+@app.put("/panel/kullanici-duzenle/{kullanici_id}")
+async def kullanici_duzenle(
+    kullanici_id: str,
+    request: Request,
+    bg_tasks: BackgroundTasks,
+    user: PanelUserDto = Depends(panel_dogrula),
+    s: Session = Depends(db)
+):
+    """Ana Admin'in müşteri kullanıcıların şifresini sıfırlayabilmesi ve not ekleyebilmesi için."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Yalnızca admin düzenleyebilir.")
+    data = await request.json()
+    k = s.query(Kullanici).filter_by(id=kullanici_id).first()
+    if not k:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+    degisiklik = []
+    if data.get("sifre"):
+        if len(data["sifre"]) < 6:
+            raise HTTPException(status_code=400, detail="Şifre en az 6 karakter olmalıdır.")
+        k.sifre_hash = sifre_hashle(data["sifre"])
+        degisiklik.append("Şifre sıfırlandı")
+    if "not" in data:
+        # Notları lisans kaydına ekle (mevcut aktif lisans varsa)
+        lisans = s.query(Lisans).filter_by(musteri_email=k.email, aktif=True).order_by(Lisans.olusturma_tar.desc()).first()
+        if lisans:
+            lisans.notlar = data["not"]
+            degisiklik.append("Lisans notu güncellendi")
+    s.commit()
+    panel_log_yaz(s, user.kullanici_adi, "Müşteri Düzenlendi", f"ID: {kullanici_id} | {', '.join(degisiklik)}")
+    istihbarat_raporu(bg_tasks, "Müşteri Bilgisi Düzenlendi", user.tam_isim, f"Kullanıcı: {k.ad_soyad} ({k.email})\n{', '.join(degisiklik)}", request.client.host)
+    return {"basarili": True, "mesaj": "Değişiklikler kaydedildi."}
 
 @app.post("/panel/uyelik-tur-ekle")
 async def uyelik_tur_ekle(request: Request, bg_tasks: BackgroundTasks, user: PanelUserDto = Depends(yetki_kontrol("uyelik_tur")), s: Session = Depends(db)):
@@ -1066,6 +1131,7 @@ class OfflineLisansIstek(BaseModel):
     istek_kodu: str
     sure_gun: int
     yetki: str
+    kime_uretildi: str
 
 @app.post("/panel/offline-lisans-uret")
 def offline_lisans_uret(istek: OfflineLisansIstek, request: Request, bg_tasks: BackgroundTasks, user: PanelUserDto = Depends(yetki_kontrol("offline_lisans")), s: Session = Depends(db)):
@@ -1073,7 +1139,24 @@ def offline_lisans_uret(istek: OfflineLisansIstek, request: Request, bg_tasks: B
     imza = hmac.new(OFFLINE_SECRET_KEY, mesaj, hashlib.sha256).hexdigest()[:16].upper()
     akt_kod = f"ACT-{istek.sure_gun}D-{istek.yetki}-{imza}"
     
-    detay = f"İstek Kodu: {istek.istek_kodu}\nSüre: {istek.sure_gun} Gün\nYetki: {istek.yetki}\n\nÜretilen Kod: {akt_kod}"
+    bitis = datetime.datetime.utcnow() + datetime.timedelta(days=istek.sure_gun) if istek.sure_gun > 0 else None
+    
+    l = Lisans(
+        lisans_kodu=akt_kod,
+        musteri_adi=istek.kime_uretildi,
+        tur="Offline",
+        bitis_tarihi=bitis,
+        notlar=f"offline|{istek.istek_kodu}",
+        aktif=True,
+        uretilen_tip="offline",
+        istek_kodu_db=istek.istek_kodu,
+        sure_gun_db=istek.sure_gun,
+        yetki_seviyesi=istek.yetki
+    )
+    s.add(l)
+    s.commit()
+    
+    detay = f"İstek Kodu: {istek.istek_kodu}\nMüşteri: {istek.kime_uretildi}\nSüre: {istek.sure_gun} Gün\nYetki: {istek.yetki}\n\nÜretilen Kod: {akt_kod}"
     istihbarat_raporu(bg_tasks, "Çevrimdışı (Offline) Lisans Üretildi", user.tam_isim, detay, request.client.host)
     return {"basarili": True, "aktivasyon_kodu": akt_kod, "istek_kodu": istek.istek_kodu, "sure_gun": istek.sure_gun, "yetki": istek.yetki}
 
@@ -1188,6 +1271,8 @@ def panel_yetkililer_getir(user: PanelUserDto = Depends(panel_dogrula), s: Sessi
         "isim_soyad": p.isim_soyad,
         "email": p.email,
         "is_admin": p.is_admin,
+        "telegram_chat_id": p.telegram_chat_id or "",
+        "telegram_bildirim_alabilir": p.telegram_bildirim_alabilir,
         "son_giris": p.son_giris.strftime("%d.%m.%Y %H:%M") if p.son_giris else "-",
         "son_cikis": p.son_cikis.strftime("%d.%m.%Y %H:%M") if p.son_cikis else "-",
         "yetkiler": {
@@ -1255,6 +1340,14 @@ async def panel_yetkili_guncelle(
     for key, col in yetki_map.items():
         if key in yetkiler:
             setattr(y, col, bool(yetkiler[key]))
+            
+    if "telegram_chat_id" in data:
+        y.telegram_chat_id = data["telegram_chat_id"]
+    if "telegram_bildirim_alabilir" in data:
+        y.telegram_bildirim_alabilir = data["telegram_bildirim_alabilir"]
+    if data.get("sifre"):
+        y.sifre_hash = sifre_hashle(data["sifre"])
+        
     s.commit()
     panel_log_yaz(s, user.kullanici_adi, "Yetkili Güncelledi", f"ID: {yetkili_id}")
     return {"basarili": True}
@@ -1302,7 +1395,7 @@ a { color: inherit; text-decoration: none; }
 #login-hata { color: #ff6b6b; font-size: 13px; margin-top: 8px; min-height: 20px; }
 
 /* Layout */
-.sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 220px; background: #1a1d2e; border-right: 1px solid #2a2d3e; padding: 20px 0; display: flex; flex-direction: column; }
+.sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 220px; background: #1a1d2e; border-right: 1px solid #2a2d3e; padding: 20px 0; display: flex; flex-direction: column; overflow-y: auto; }
 .sidebar-logo { padding: 0 20px 20px; border-bottom: 1px solid #2a2d3e; margin-bottom: 12px; }
 .sidebar-logo h1 { font-size: 15px; font-weight: 700; color: #5b8cff; }
 .sidebar-logo p { font-size: 11px; color: #666; margin-top: 2px; }
@@ -1311,6 +1404,27 @@ a { color: inherit; text-decoration: none; }
 .nav-item.active { background: #222540; color: #5b8cff; border-right: 3px solid #5b8cff; }
 .nav-item .badge { background: #ff4757; color: white; border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 700; margin-left: auto; }
 .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+/* Accordion Sidebar */
+.acc-header { display: flex; align-items: center; gap: 10px; padding: 10px 20px; font-size: 13px; color: #aaa; cursor: pointer; transition: all 0.15s; user-select: none; }
+.acc-header:hover { background: #222540; color: #e0e0e0; }
+.acc-header.active { background: #222540; color: #5b8cff; border-right: 3px solid #5b8cff; }
+.acc-content { display: none; background: #121420; padding: 4px 0; }
+.acc-content.show { display: block; }
+.acc-item { padding: 8px 20px 8px 46px; font-size: 12px; color: #888; cursor: pointer; transition: all 0.15s; display: block; position: relative; }
+.acc-item:hover { color: #e0e0e0; background: #1a1d2e; }
+.acc-item.active { color: #5b8cff; background: #1a1d2e; }
+.acc-item.active::before { content: ''; position: absolute; left: 24px; top: 50%; transform: translateY(-50%); width: 4px; height: 4px; border-radius: 50%; background: #5b8cff; }
+.acc-chevron { margin-left: auto; font-size: 10px; transition: transform 0.2s; }
+.acc-header.open .acc-chevron { transform: rotate(90deg); }
+
+/* Sub Tabs for Yeni Lisans */
+.sub-tabs { display: flex; gap: 2px; background: #0f1117; padding: 4px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #2a2d3e; }
+.sub-tab { flex: 1; text-align: center; padding: 8px 12px; font-size: 12px; font-weight: 600; color: #888; cursor: pointer; border-radius: 6px; transition: all 0.2s; }
+.sub-tab:hover { color: #e0e0e0; }
+.sub-tab.active { background: #222540; color: #5b8cff; }
+.sub-pane { display: none; }
+.sub-pane.active { display: block; }
 
 .main { margin-left: 220px; padding: 24px; position: relative; }
 .page { display: none; }
@@ -1467,9 +1581,18 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
     <h1>OPC Gateway</h1>
     <p>Lisans Yönetim Paneli</p>
   </div>
-  <div class="nav-item active" onclick="sayfaAc('lisanslar')" id="nav-lisanslar">
-    <span class="nav-icon">🔑</span> Lisanslar
+  
+  <div class="acc-header open" onclick="toggleAccordion(this)">
+    <span class="nav-icon">🔑</span> Lisanslar <span class="acc-chevron">▶</span>
   </div>
+  <div class="acc-content show">
+    <div class="acc-item active" onclick="sayfaAc('yeni-lisans')" id="nav-yeni-lisans">Yeni Lisans Oluştur</div>
+    <div class="acc-item" onclick="sayfaAc('tum-lisanslar')" id="nav-tum-lisanslar">Tüm Lisanslar</div>
+    <div class="acc-item" onclick="sayfaAc('lisans-islemleri')" id="nav-lisans-islemleri">Lisans İşlemleri</div>
+    <div class="acc-item" onclick="sayfaAc('lisans-istatistikleri')" id="nav-lisans-istatistikleri">Lisans İstatistikleri</div>
+    <div class="acc-item yetki-uyelik-tur" onclick="sayfaAc('uyelik-turleri')" id="nav-uyelik-turleri" style="display:none">Lisans Türleri</div>
+  </div>
+
   <div class="nav-item" onclick="sayfaAc('talepler')" id="nav-talepler">
     <span class="nav-icon">📋</span> Talepler
     <span class="badge" id="talep-badge" style="display:none">0</span>
@@ -1484,9 +1607,6 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
   <div class="nav-item yetki-ip-ban" onclick="sayfaAc('ip-banlar')" id="nav-ip-banlar" style="display:none">
     <span class="nav-icon">🚫</span> IP Ban
   </div>
-  <div class="nav-item yetki-uyelik-tur" onclick="sayfaAc('uyelik-turleri')" id="nav-uyelik-turleri" style="display:none">
-    <span class="nav-icon">⚙️</span> Üyelik Türleri
-  </div>
   <div class="nav-item" onclick="sayfaAc('loglar')" id="nav-loglar">
     <span class="nav-icon">📜</span> Loglar
   </div>
@@ -1496,9 +1616,7 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
   <div class="nav-item yetki-admin-only" onclick="sayfaAc('panel-loglari')" id="nav-panel-loglari" style="display:none">
     <span class="nav-icon">📑</span> Kayıtlar
   </div>
-  <div class="nav-item yetki-offline-lisans" onclick="sayfaAc('offline-lisans')" id="nav-offline-lisans" style="display:none">
-    <span class="nav-icon">🔒</span> Offline Lisans
-  </div>
+  
   <div class="nav-item" onclick="panelCikis()" style="margin-top:auto;color:#ef4444;border-top:1px solid #2a2d3e;padding-top:14px;">
     <span class="nav-icon">🚪</span> Çıkış Yap
   </div>
@@ -1508,12 +1626,16 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
 <div class="main">
   <div id="panel-greeting"></div>
 
-  <!-- Lisanslar -->
-  <div class="page active" id="page-lisanslar">
-    <div class="page-title">🔑 Lisans Yönetimi</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-      <div class="card">
-        <h3>Yeni Lisans Oluştur</h3>
+  <!-- Yeni Lisans -->
+  <div class="page active" id="page-yeni-lisans">
+    <div class="page-title">➕ Yeni Lisans Oluştur</div>
+    <div class="card" style="max-width:600px;">
+      <div class="sub-tabs">
+        <div class="sub-tab active" onclick="switchYeniLisansTab('online')" id="tab-yeni-online">Online Lisans</div>
+        <div class="sub-tab" onclick="switchYeniLisansTab('offline')" id="tab-yeni-offline">Offline Lisans</div>
+      </div>
+      
+      <div class="sub-pane active" id="pane-yeni-online">
         <input type="text" id="l-adi" placeholder="Müşteri adı soyadı *">
         <input type="email" id="l-email" placeholder="E-posta (teşekkür maili için)">
         <select id="l-tur">
@@ -1527,46 +1649,30 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
         <button class="btn btn-primary yetki-lisans-olustur" onclick="lisansOlustur()">✚ Oluştur</button>
         <div id="l-sonuc" style="margin-top:10px;font-size:13px;color:#4caf50;font-weight:bold;font-family:monospace;"></div>
       </div>
-      <div class="card">
-        <h3>Lisans İşlemleri</h3>
-        <input type="text" id="l-islem-kod" placeholder="Lisans kodu (AYL-XXXX-XXXX-XXXX)">
-        <input type="number" id="l-uzat-gun" placeholder="Uzatma (gün)" value="30" min="1">
-        <div class="row-btns">
-          <button class="btn btn-danger btn-sm yetki-lisans-sil" onclick="iptalEt()">✖ İptal Et</button>
-          <button class="btn btn-warning btn-sm yetki-hwid-sifirla" onclick="hwIdSifirla()">↺ HWID Sıfırla</button>
-          <button class="btn btn-success btn-sm yetki-sure-uzat" onclick="sureUzat()">+ Süre Uzat</button>
-        </div>
-        <div id="l-islem-sonuc" style="margin-top:10px;font-size:13px;"></div>
+      
+      <div class="sub-pane" id="pane-yeni-offline">
+        <input type="text" id="off-kime" placeholder="Kime Üretildi (Müşteri Adı) *">
+        <input type="text" id="off-istek" placeholder="İstek Kodu (REQ-...) *">
+        <input type="number" id="off-sure" placeholder="Süre (Gün) *" value="30">
+        <select id="off-yetki">
+          <option value="FULL">Tam Yetki (FULL)</option>
+          <option value="READ">Sadece Okuma (READ)</option>
+          <option value="DEMO">Demo (DEMO)</option>
+        </select>
+        <button class="btn btn-warning yetki-offline-lisans" onclick="offlineLisansUretBtn()">🔒 Offline Lisans Üret</button>
+        <div id="off-sonuc" style="margin-top:10px;font-size:13px;color:#ffb74d;font-weight:bold;font-family:monospace;"></div>
       </div>
     </div>
+  </div>
 
-    <!-- İstatistik Kartları -->
-    <div class="card" id="istat-card">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <h3 style="margin:0">📊 Lisans İstatistikleri</h3>
-        <button class="btn btn-ghost btn-sm" onclick="istatistikYukle()">↻ Yenile</button>
-      </div>
-      <div class="istat-grid" id="istat-grid">
-        <div class="istat-card i-blue"><div class="i-val" id="is-toplam">—</div><div class="i-lbl">Toplam</div></div>
-        <div class="istat-card i-green"><div class="i-val" id="is-aktif">—</div><div class="i-lbl">Aktif</div></div>
-        <div class="istat-card i-yellow"><div class="i-val" id="is-biten">—</div><div class="i-lbl">Süresi Dolmuş</div></div>
-        <div class="istat-card i-red"><div class="i-val" id="is-iptal">—</div><div class="i-lbl">İptal</div></div>
-      </div>
-      <!-- İptal Nedenleri -->
-      <div id="neden-bolum" style="display:none;margin-top:16px;">
-        <div style="font-size:12px;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">İptal Nedenleri</div>
-        <div style="display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start;">
-          <div id="neden-bars"></div>
-          <div style="width:160px;height:160px;"><canvas id="neden-chart"></canvas></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Lisans Tablosu -->
+  <!-- Tüm Lisanslar -->
+  <div class="page" id="page-tum-lisanslar">
+    <div class="page-title">📄 Tüm Lisanslar</div>
+    
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <h3 style="margin:0">Tüm Lisanslar</h3>
-        <button class="btn btn-ghost btn-sm" onclick="lisanslariYukle()" style="">↻ Yenile</button>
+        <h3 style="margin:0;color:#4ade80;">Aktif Online Lisanslar</h3>
+        <button class="btn btn-ghost btn-sm" onclick="lisanslariYukle()">↻ Yenile</button>
       </div>
       <div class="filtre-bar">
         <button class="filtre-btn aktif" id="fb-hepsi" onclick="filtreAyarla('hepsi')">Tümü <span class="cnt-badge" id="fb-hepsi-cnt">—</span></button>
@@ -1576,9 +1682,61 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
       </div>
       <div class="tbl-wrap">
         <table>
-          <thead><tr><th>Kod</th><th>Müşteri</th><th>Tür</th><th>Durum</th><th>HWID</th><th>Bitiş</th><th>Son Checkin</th><th>Aktivasyon</th><th>Not / İptal Nedeni</th><th>İşlem</th></tr></thead>
-          <tbody id="l-tablo"></tbody>
+          <thead><tr><th>Kod</th><th>Müşteri</th><th>Tür</th><th>Durum</th><th>HWID</th><th>Bitiş</th><th>Son Checkin</th><th>Not / İptal</th><th>İşlem</th></tr></thead>
+          <tbody id="l-tablo-online"></tbody>
         </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0;color:#fbbf24;">Üretilen Offline Lisanslar</h3>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Kod</th><th>Müşteri</th><th>Yetki</th><th>Süre</th><th>İstek Kodu</th><th>Durum</th><th>Not / İptal</th><th>İşlem</th></tr></thead>
+          <tbody id="l-tablo-offline"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lisans İşlemleri -->
+  <div class="page" id="page-lisans-islemleri">
+    <div class="page-title">⚙️ Lisans İşlemleri</div>
+    <div class="card" style="max-width:500px;">
+      <h3>Lisans İşlemleri</h3>
+      <input type="text" id="l-islem-kod" placeholder="Lisans kodu (AYL-XXXX-XXXX-XXXX)">
+      <input type="number" id="l-uzat-gun" placeholder="Uzatma (gün)" value="30" min="1">
+      <div class="row-btns">
+        <button class="btn btn-danger btn-sm yetki-lisans-sil" onclick="iptalEt()">✖ İptal Et</button>
+        <button class="btn btn-warning btn-sm yetki-hwid-sifirla" onclick="hwIdSifirla()">↺ HWID Sıfırla</button>
+        <button class="btn btn-success btn-sm yetki-sure-uzat" onclick="sureUzat()">+ Süre Uzat</button>
+      </div>
+      <div id="l-islem-sonuc" style="margin-top:10px;font-size:13px;"></div>
+    </div>
+  </div>
+
+  <!-- Lisans İstatistikleri -->
+  <div class="page" id="page-lisans-istatistikleri">
+    <div class="page-title">📊 Lisans İstatistikleri</div>
+    <div class="card" id="istat-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0">İstatistikler</h3>
+        <button class="btn btn-ghost btn-sm" onclick="istatistikYukle()">↻ Yenile</button>
+      </div>
+      <div class="istat-grid" id="istat-grid">
+        <div class="istat-card i-blue"><div class="i-val" id="is-toplam">—</div><div class="i-lbl">Toplam</div></div>
+        <div class="istat-card i-green"><div class="i-val" id="is-aktif">—</div><div class="i-lbl">Aktif</div></div>
+        <div class="istat-card i-yellow"><div class="i-val" id="is-biten">—</div><div class="i-lbl">Süresi Dolmuş</div></div>
+        <div class="istat-card i-red"><div class="i-val" id="is-iptal">—</div><div class="i-lbl">İptal</div></div>
+      </div>
+      <div id="neden-bolum" style="display:none;margin-top:16px;">
+        <div style="font-size:12px;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">İptal Nedenleri</div>
+        <div style="display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start;">
+          <div id="neden-bars"></div>
+          <div style="width:160px;height:160px;"><canvas id="neden-chart"></canvas></div>
+        </div>
       </div>
     </div>
   </div>
@@ -1639,10 +1797,37 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
       </div>
       <div class="tbl-wrap">
         <table>
-          <thead><tr><th>Ad Soyad</th><th>E-posta</th><th>Doğrulandı</th><th>Kayıt</th><th>Son Giriş</th><th>Son IP</th><th>Lisans</th></tr></thead>
+          <thead><tr><th>Ad Soyad</th><th>E-posta</th><th>Doğrulandı</th><th>Kayıt</th><th>Son Giriş</th><th>Son IP</th><th>Lisans</th><th>İşlem</th></tr></thead>
           <tbody id="kullanici-tablo"></tbody>
         </table>
       </div>
+    </div>
+  </div>
+
+  <!-- Kullanıcı Düzenle Modal -->
+  <div id="kullanici-duzenle-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:600;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+    <div style="background:#1a1d2e;border:1px solid #2a2d3e;border-radius:14px;padding:28px;width:520px;max-width:95vw;max-height:90vh;overflow-y:auto;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+        <h3 style="color:#5b8cff;font-size:16px;">✏️ Kullanıcı Düzenle</h3>
+        <button class="btn btn-ghost btn-sm" onclick="kullaniciDuzenleModalKapat()">✕</button>
+      </div>
+      <div id="kd-bilgi" style="background:#0f1117;border-radius:8px;padding:12px;margin-bottom:18px;font-size:13px;color:#aaa;"></div>
+
+      <div style="margin-bottom:14px;">
+        <label style="font-size:11px;color:#666;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.5px;">Yeni Şifre (boş bırakılırsa değişmez)</label>
+        <input type="password" id="kd-sifre" placeholder="Yeni şifre (min. 6 karakter)" style="margin:0;">
+      </div>
+
+      <div style="border-top:1px solid #2a2d3e;padding-top:16px;margin-bottom:14px;">
+        <label style="font-size:11px;color:#666;display:block;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;">📋 Kullanıcı Notları / Admin Notu</label>
+        <textarea id="kd-not" placeholder="Bu kullanıcı hakkında not..." style="min-height:60px;margin:0;"></textarea>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-top:18px;">
+        <button class="btn btn-primary" style="flex:1;" onclick="kullaniciDuzenleKaydet()">💾 Kaydet</button>
+        <button class="btn btn-ghost" onclick="kullaniciDuzenleModalKapat()">İptal</button>
+      </div>
+      <div id="kd-sonuc" style="margin-top:10px;font-size:13px;display:none;"></div>
     </div>
   </div>
 
@@ -1819,7 +2004,51 @@ code { font-family: monospace; font-size: 12px; background: #222540; padding: 2p
 
 </div><!-- /main -->
 
-<!-- Notification -->
+<!-- Yetkili Düzenle Modal -->
+<div id="yetkili-duzenle-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:600;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+  <div style="background:#1a1d2e;border:1px solid #2a2d3e;border-radius:14px;padding:28px;width:540px;max-width:95vw;max-height:92vh;overflow-y:auto;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+      <h3 style="color:#5b8cff;font-size:16px;">✏️ Yetkili Düzenle</h3>
+      <button class="btn btn-ghost btn-sm" onclick="yetkiliDuzenleModalKapat()">✕</button>
+    </div>
+    <div id="yd-bilgi" style="background:#0f1117;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:#aaa;"></div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:11px;color:#666;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.5px;">Yeni Şifre (boş bırakılırsa değişmez)</label>
+      <input type="password" id="yd-sifre" placeholder="Yeni şifre..." style="margin:0;">
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="font-size:11px;color:#666;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.5px;">📱 Telegram Chat ID</label>
+      <input type="text" id="yd-telegram-id" placeholder="Örn: 123456789" style="margin:0;">
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:#aaa;cursor:pointer;">
+        <input type="checkbox" id="yd-telegram-bildirim"> Telegram bildirimleri alsın
+      </label>
+    </div>
+
+    <div style="border-top:1px solid #2a2d3e;padding-top:16px;margin-bottom:16px;">
+      <div style="font-size:11px;color:#666;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;">🛡️ Yetkiler</div>
+      <div style="display:flex;flex-direction:column;gap:7px;font-size:13px;color:#ccc;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-lisans_olustur"> Lisans Oluşturabilme</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-lisans_sil"> Lisans Silebilme / İptal</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-hwid_sifirla"> HWID Sıfırlama</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-sure_uzat"> Lisans Süre Uzatma</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-talep_onayla"> Lisans Taleplerini Onaylama</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-kullanici_ekle"> Panel Kullanıcısı (Yetkili) Ekleme</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-mesaj_yaz"> Mesaj Yazabilme</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-ip_ban"> IP Banlama &amp; Kaldırma</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-uyelik_tur"> Üyelik Türleri Yönetimi</label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="yd-cb-offline_lisans"> 🔒 Çevrimdışı Lisans Üretme</label>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:12px;margin-top:18px;">
+      <button class="btn btn-primary" style="flex:1;" onclick="yetkiliDuzenleKaydet()">💾 Değişiklikleri Kaydet</button>
+      <button class="btn btn-ghost" onclick="yetkiliDuzenleModalKapat()">İptal</button>
+    </div>
+    <div id="yd-sonuc" style="margin-top:10px;font-size:13px;display:none;"></div>
+  </div>
+</div>
 <div class="notif" id="notif"></div>
 
 <script>
@@ -1925,18 +2154,25 @@ function panelCikis() {
 function panelOtoPoll() {
   const yukle = {
     lisanslar:       lisanslariYukle,
+    "tum-lisanslar": lisanslariYukle,
+    "yeni-lisans":   turleriYukle,
+    "lisans-islemleri": () => {},
+    "lisans-istatistikleri": istatistikYukle,
+    "uyelik-turleri": turleriYukle,
     talepler:        taleplerYukle,
     mesajlar:        mesajlariYukle,
     kullanicilar:    kullanicilariYukle,
     "ip-banlar":     ipBanlariYukle,
-    "uyelik-turleri": turleriYukle,
     loglar:          logYukle,
     yetkililer:      yetkilileriYukle,
     "panel-loglari": panelLoglariYukle,
     "offline-lisans": () => {
-       document.getElementById("ol-istek-kodu").value = "";
-       document.getElementById("ol-sonuc-kart").style.display = "none";
-       document.getElementById("ol-hata").style.display = "none";
+       const el1 = document.getElementById("ol-istek-kodu");
+       const el2 = document.getElementById("ol-sonuc-kart");
+       const el3 = document.getElementById("ol-hata");
+       if (el1) el1.value = "";
+       if (el2) el2.style.display = "none";
+       if (el3) el3.style.display = "none";
     },
   };
   if (yukle[_aktifSayfa]) yukle[_aktifSayfa]();
@@ -1944,21 +2180,27 @@ function panelOtoPoll() {
 
 function sayfaAc(sayfa) {
   document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
-  document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
-  document.getElementById("page-" + sayfa).classList.add("active");
-  document.getElementById("nav-" + sayfa).classList.add("active");
+  document.querySelectorAll(".nav-item, .acc-item").forEach(n => n.classList.remove("active"));
+  const pageEl = document.getElementById("page-" + sayfa);
+  if (pageEl) pageEl.classList.add("active");
+  const navEl = document.getElementById("nav-" + sayfa);
+  if (navEl) navEl.classList.add("active");
   _aktifSayfa = sayfa;
 
   const yukle = {
-    lisanslar:       lisanslariYukle,
-    talepler:        taleplerYukle,
-    mesajlar:        mesajlariYukle,
-    kullanicilar:    kullanicilariYukle,
-    "ip-banlar":     ipBanlariYukle,
-    "uyelik-turleri": turleriYukle,
-    loglar:          logYukle,
-    yetkililer:      yetkilileriYukle,
-    "panel-loglari": panelLoglariYukle,
+    lisanslar:           lisanslariYukle,
+    "tum-lisanslar":     lisanslariYukle,
+    "yeni-lisans":       turleriYukle,
+    "lisans-islemleri":  () => {},
+    "lisans-istatistikleri": istatistikYukle,
+    "uyelik-turleri":    turleriYukle,
+    talepler:            taleplerYukle,
+    mesajlar:            mesajlariYukle,
+    kullanicilar:        kullanicilariYukle,
+    "ip-banlar":         ipBanlariYukle,
+    loglar:              logYukle,
+    yetkililer:          yetkilileriYukle,
+    "panel-loglari":     panelLoglariYukle,
   };
   if (yukle[sayfa]) yukle[sayfa]();
 }
@@ -2107,19 +2349,75 @@ function lisanslariYukle() {
       suresi_dolmus: '<span class="badge" style="background:#f59e0b22;color:#fbbf24;border:1px solid #f59e0b55;">⏱ Süresi Doldu</span>',
       iptal:         '<span class="badge b-pasif">✗ İptal</span>',
     };
-    document.getElementById("l-tablo").innerHTML = liste.map(l => `
-      <tr>
-        <td><code>${l.lisans_kodu}</code></td>
-        <td>${l.musteri_adi}<br><span style="color:#555;font-size:11px;">${l.musteri_email||""}</span></td>
-        <td><span class="badge ${turBadge[l.tur]||""}"> ${l.tur}</span></td>
-        <td>${durumBadge[l.durum] || l.durum}</td>
-        <td style="font-family:monospace;font-size:11px;color:#555;">${(l.hwid||"").substring(0,18)}…</td>
-        <td>${l.bitis_tarihi}</td>
-        <td>${l.son_checkin}</td>
-        <td>${l.aktivasyon}</td>
-        <td style="color:#666;font-size:11px;">${l.notlar||""}${l.iptal_nedeni ? `<br><span style="color:#f87171;">İptal: ${l.iptal_nedeni}</span>` : ""}</td>
-        <td><button class="btn btn-danger btn-sm" onclick="lisansSil('${l.lisans_kodu}')">🗑 Sil</button></td>
-      </tr>`).join("");
+
+    // Online ve Offline lisansları ayır
+    const online = liste.filter(l => {
+      const tip = (l.uretilen_tip || "").toLowerCase();
+      const notlar = (l.notlar || "").toLowerCase();
+      return tip !== "offline" && !notlar.startsWith("offline");
+    });
+    const offline = liste.filter(l => {
+      const tip = (l.uretilen_tip || "").toLowerCase();
+      const notlar = (l.notlar || "").toLowerCase();
+      return tip === "offline" || notlar.startsWith("offline");
+    });
+
+    // Online tablo
+    const onlineTablo = document.getElementById("l-tablo-online");
+    if (onlineTablo) {
+      onlineTablo.innerHTML = online.map(l => `
+        <tr>
+          <td><code>${l.lisans_kodu}</code></td>
+          <td>${l.musteri_adi}<br><span style="color:#555;font-size:11px;">${l.musteri_email||""}</span></td>
+          <td><span class="badge ${turBadge[l.tur]||""}"> ${l.tur}</span></td>
+          <td>${durumBadge[l.durum] || l.durum}</td>
+          <td style="font-family:monospace;font-size:11px;color:#555;">${(l.hwid||"—").substring(0,18)}</td>
+          <td>${l.bitis_tarihi}</td>
+          <td>${l.son_checkin}</td>
+          <td style="color:#666;font-size:11px;">${l.notlar||""}${l.iptal_nedeni ? `<br><span style="color:#f87171;">İptal: ${l.iptal_nedeni}</span>` : ""}</td>
+          <td><button class="btn btn-danger btn-sm" onclick="lisansSil('${l.lisans_kodu}')">🗑 Sil</button></td>
+        </tr>`).join("") || '<tr><td colspan="9" style="color:#555;text-align:center;padding:20px;">Kayıt yok</td></tr>';
+    }
+
+    // Offline tablo
+    const offlineTablo = document.getElementById("l-tablo-offline");
+    if (offlineTablo) {
+      offlineTablo.innerHTML = offline.map(l => {
+        // istek kodunu notlar'dan veya istek_kodu alanından çek
+        let istekKodu = l.istek_kodu || "";
+        if (!istekKodu && (l.notlar||"").includes("|")) istekKodu = l.notlar.split("|")[1] || "";
+        const yetki = l.yetki || "FULL";
+        const sureGun = l.sure_gun || "—";
+        return `<tr>
+          <td><code style="color:#a78bfa;">${l.lisans_kodu}</code></td>
+          <td>${l.musteri_adi}<br><span style="color:#555;font-size:11px;">${l.musteri_email||""}</span></td>
+          <td><span class="badge" style="background:#a78bfa22;color:#a78bfa;border:1px solid #a78bfa44;">${yetki}</span></td>
+          <td>${sureGun !== "—" ? sureGun + " Gün" : "—"}</td>
+          <td>${istekKodu ? `<code style="color:#7eb8ff;font-size:11px;">${istekKodu}</code>` : '<span style="color:#555;">—</span>'}</td>
+          <td>${durumBadge[l.durum] || l.durum}</td>
+          <td style="color:#666;font-size:11px;">${l.iptal_nedeni ? `<span style="color:#f87171;">İptal: ${l.iptal_nedeni}</span>` : "—"}</td>
+          <td><button class="btn btn-danger btn-sm" onclick="lisansSil('${l.lisans_kodu}')">🗑 Sil</button></td>
+        </tr>`;
+      }).join("") || '<tr><td colspan="8" style="color:#555;text-align:center;padding:20px;">Henüz offline lisans üretilmemiş</td></tr>';
+    }
+
+    // Geriye dönük uyumluluk - eski l-tablo varsa onu da doldur
+    const eskiTablo = document.getElementById("l-tablo");
+    if (eskiTablo) {
+      eskiTablo.innerHTML = liste.map(l => `
+        <tr>
+          <td><code>${l.lisans_kodu}</code></td>
+          <td>${l.musteri_adi}<br><span style="color:#555;font-size:11px;">${l.musteri_email||""}</span></td>
+          <td><span class="badge ${turBadge[l.tur]||""}"> ${l.tur}</span></td>
+          <td>${durumBadge[l.durum] || l.durum}</td>
+          <td style="font-family:monospace;font-size:11px;color:#555;">${(l.hwid||"").substring(0,18)}</td>
+          <td>${l.bitis_tarihi}</td>
+          <td>${l.son_checkin}</td>
+          <td>${l.aktivasyon}</td>
+          <td style="color:#666;font-size:11px;">${l.notlar||""}${l.iptal_nedeni ? `<br><span style="color:#f87171;">İptal: ${l.iptal_nedeni}</span>` : ""}</td>
+          <td><button class="btn btn-danger btn-sm" onclick="lisansSil('${l.lisans_kodu}')">🗑 Sil</button></td>
+        </tr>`).join("");
+    }
   });
 }
 
@@ -2281,6 +2579,8 @@ function adminMesajGonder() {
 }
 
 // ===== KULLANICILAR =====
+let _duzenleKullanici = null;
+
 function kullanicilariYukle() {
   fetch("/panel/kullanicilar", {headers: auth()}).then(r => r.json()).then(liste => {
     document.getElementById("kullanici-tablo").innerHTML = liste.map(k => `
@@ -2292,8 +2592,68 @@ function kullanicilariYukle() {
         <td>${k.son_giris}</td>
         <td><code>${k.son_ip||"-"}</code></td>
         <td>${k.lisans_kodu ? `<code>${k.lisans_kodu}</code> <span class="badge">${k.lisans_tur||""}</span>` : '<span style="color:#555">Yok</span>'}</td>
-        <td><button class="btn btn-danger btn-sm" onclick="kullaniciSil('${k.id}','${k.ad_soyad}')">Sil</button></td>
+        <td>
+          <div style="display:flex;gap:4px;">
+            <button class="btn btn-primary btn-sm" onclick="kullaniciDuzenleModalAc('${k.id}','${(k.ad_soyad||'').replace(/'/g,'&#39;')}','${k.email}')">✏️ Düzenle</button>
+            <button class="btn btn-danger btn-sm" onclick="kullaniciSil('${k.id}','${(k.ad_soyad||'').replace(/'/g,'&#39;')}')">Sil</button>
+          </div>
+        </td>
       </tr>`).join("");
+  });
+}
+
+function kullaniciDuzenleModalAc(id, ad, email) {
+  _duzenleKullanici = {id, ad, email};
+  document.getElementById("kd-bilgi").innerHTML = `<b style="color:#e0e0e0;">${ad}</b> &lt;${email}&gt;`;
+  document.getElementById("kd-sifre").value = "";
+  document.getElementById("kd-not").value = "";
+  document.getElementById("kd-sonuc").style.display = "none";
+  const m = document.getElementById("kullanici-duzenle-modal");
+  m.style.display = "flex";
+}
+
+function kullaniciDuzenleModalKapat() {
+  document.getElementById("kullanici-duzenle-modal").style.display = "none";
+  _duzenleKullanici = null;
+}
+
+function kullaniciDuzenleKaydet() {
+  if (!_duzenleKullanici) return;
+  const sifre = document.getElementById("kd-sifre").value.trim();
+  const not = document.getElementById("kd-not").value.trim();
+  const sonucEl = document.getElementById("kd-sonuc");
+
+  if (sifre && sifre.length < 6) {
+    sonucEl.textContent = "❌ Şifre en az 6 karakter olmalıdır.";
+    sonucEl.style.color = "#f87171";
+    sonucEl.style.display = "block";
+    return;
+  }
+
+  const payload = {};
+  if (sifre) payload.sifre = sifre;
+  if (not) payload.not = not;
+
+  fetch("/panel/kullanici-duzenle/" + _duzenleKullanici.id, {
+    method: "PUT",
+    headers: auth(),
+    body: JSON.stringify(payload)
+  }).then(r => r.json()).then(d => {
+    if (d.basarili) {
+      sonucEl.textContent = "✅ Değişiklikler kaydedildi.";
+      sonucEl.style.color = "#4caf50";
+      sonucEl.style.display = "block";
+      setTimeout(() => kullaniciDuzenleModalKapat(), 1200);
+      kullanicilariYukle();
+    } else {
+      sonucEl.textContent = "❌ " + (d.detail || "Hata oluştu.");
+      sonucEl.style.color = "#f87171";
+      sonucEl.style.display = "block";
+    }
+  }).catch(() => {
+    sonucEl.textContent = "❌ Sunucu ile iletişim kurulamadı.";
+    sonucEl.style.color = "#f87171";
+    sonucEl.style.display = "block";
   });
 }
 
@@ -2422,7 +2782,7 @@ function yetkilileriYukle() {
         <td style="max-width:200px;line-height:1.8">${y.is_admin ? '<span class="badge b-onay">TÜM YETKİLER</span>' : yStr(y.yetkiler)}</td>
         <td>${y.son_giris}</td>
         <td>${y.son_cikis}</td>
-        <td>${!y.is_admin ? `<button class="btn btn-danger btn-sm" onclick="yetkiliSil(${y.id}, '${y.kullanici_adi}')">Sil</button>` : "-"}</td>
+        <td>${!y.is_admin ? `<div style="display:flex;gap:4px;"><button class="btn btn-primary btn-sm" onclick="yetkiliDuzenleModalAc(${y.id},'${y.kullanici_adi}','${y.isim_soyad||''}','${y.telegram_chat_id||''}',${y.telegram_bildirim_alabilir},${JSON.stringify(y.yetkiler).replace(/"/g,'&quot;')})">✏️ Düzenle</button><button class="btn btn-danger btn-sm" onclick="yetkiliSil(${y.id}, '${y.kullanici_adi}')">Sil</button></div>` : "-"}</td>
       </tr>`).join("");
   }).catch(e => {
       document.getElementById("yetkili-tablo").innerHTML = `<tr><td colspan="7" style="color:#f87171">Yetkiniz yok veya yüklenemedi.</td></tr>`;
@@ -2519,6 +2879,69 @@ function olKopyala() {
   });
 }
 
+let _duzenleYetkili = null;
+
+function yetkiliDuzenleModalAc(id, kadi, isim, telegramId, telegramBildirim, yetkillerJson) {
+  _duzenleYetkili = id;
+  let yetkiler = {};
+  try { yetkiler = typeof yetkillerJson === 'string' ? JSON.parse(yetkillerJson) : yetkillerJson; } catch(e) {}
+  document.getElementById("yd-bilgi").innerHTML = `<b style="color:#e0e0e0;">${isim||kadi}</b> <span style="color:#666;">(@${kadi})</span>`;
+  document.getElementById("yd-sifre").value = "";
+  document.getElementById("yd-telegram-id").value = telegramId || "";
+  document.getElementById("yd-telegram-bildirim").checked = !!telegramBildirim;
+  const cbMap = ["lisans_olustur","lisans_sil","hwid_sifirla","sure_uzat","talep_onayla","kullanici_ekle","mesaj_yaz","ip_ban","uyelik_tur","offline_lisans"];
+  cbMap.forEach(k => {
+    const el = document.getElementById("yd-cb-" + k);
+    if (el) el.checked = !!(yetkiler[k]);
+  });
+  document.getElementById("yd-sonuc").style.display = "none";
+  document.getElementById("yetkili-duzenle-modal").style.display = "flex";
+}
+
+function yetkiliDuzenleModalKapat() {
+  document.getElementById("yetkili-duzenle-modal").style.display = "none";
+  _duzenleYetkili = null;
+}
+
+function yetkiliDuzenleKaydet() {
+  if (!_duzenleYetkili) return;
+  const sonucEl = document.getElementById("yd-sonuc");
+  const sifre = document.getElementById("yd-sifre").value.trim();
+  const telegramId = document.getElementById("yd-telegram-id").value.trim();
+  const telegramBildirim = document.getElementById("yd-telegram-bildirim").checked;
+
+  const cbMap = ["lisans_olustur","lisans_sil","hwid_sifirla","sure_uzat","talep_onayla","kullanici_ekle","mesaj_yaz","ip_ban","uyelik_tur","offline_lisans"];
+  const yetkiler = {};
+  cbMap.forEach(k => {
+    const el = document.getElementById("yd-cb-" + k);
+    yetkiler[k] = el ? el.checked : false;
+  });
+
+  const payload = { yetkiler, telegram_chat_id: telegramId, telegram_bildirim_alabilir: telegramBildirim };
+  if (sifre) payload.sifre = sifre;
+
+  fetch("/panel/yetkili-guncelle/" + _duzenleYetkili, {
+    method: "PUT",
+    headers: auth(),
+    body: JSON.stringify(payload)
+  }).then(r => r.json()).then(d => {
+    if (d.basarili) {
+      sonucEl.textContent = "✅ Değişiklikler kaydedildi.";
+      sonucEl.style.color = "#4caf50";
+      sonucEl.style.display = "block";
+      setTimeout(() => { yetkiliDuzenleModalKapat(); yetkilileriYukle(); }, 1200);
+    } else {
+      sonucEl.textContent = "❌ " + (d.detail || "Hata oluştu.");
+      sonucEl.style.color = "#f87171";
+      sonucEl.style.display = "block";
+    }
+  }).catch(() => {
+    sonucEl.textContent = "❌ Sunucu ile iletişim kurulamadı.";
+    sonucEl.style.color = "#f87171";
+    sonucEl.style.display = "block";
+  });
+}
+
 function yetkiliSil(id, kadi) {
   if (!confirm(`${kadi} adlı yetkiliyi silmek istediğinize emin misiniz?`)) return;
   fetch("/panel/yetkili-sil/" + id, {method:"DELETE", headers:auth()})
@@ -2547,10 +2970,66 @@ function panelLoglariYukle() {
   });
 }
 
+// ===== ACCORDION =====
+function toggleAccordion(header) {
+  const content = header.nextElementSibling;
+  const isOpen = content.classList.contains("show");
+  if (isOpen) {
+    content.classList.remove("show");
+    header.classList.remove("open");
+  } else {
+    content.classList.add("show");
+    header.classList.add("open");
+  }
+}
+
+// ===== YENİ LİSANS ALT SEKMELER =====
+function switchYeniLisansTab(tip) {
+  document.getElementById("tab-yeni-online").classList.toggle("active", tip === "online");
+  document.getElementById("tab-yeni-offline").classList.toggle("active", tip === "offline");
+  document.getElementById("pane-yeni-online").classList.toggle("active", tip === "online");
+  document.getElementById("pane-yeni-offline").classList.toggle("active", tip === "offline");
+}
+
+// ===== YENİ LİSANS SAYFASI - OFFLINE FORM =====
+function offlineLisansUretBtn() {
+  const kime = document.getElementById("off-kime").value.trim();
+  const istek = document.getElementById("off-istek").value.trim();
+  const sure = parseInt(document.getElementById("off-sure").value) || 30;
+  const yetki = document.getElementById("off-yetki").value;
+  const sonucEl = document.getElementById("off-sonuc");
+
+  if (!kime) { sonucEl.textContent = "\u274c Kime \u00fcretildi\u011fini girin!"; sonucEl.style.color="#f87171"; return; }
+  if (!istek) { sonucEl.textContent = "\u274c \u0130stek kodunu girin!"; sonucEl.style.color="#f87171"; return; }
+
+  fetch("/panel/offline-lisans-uret", {
+    method: "POST",
+    headers: auth(),
+    body: JSON.stringify({ istek_kodu: istek, kime_uretildi: kime, sure_gun: sure, yetki: yetki })
+  }).then(r => r.json()).then(d => {
+    if (d.basarili) {
+      sonucEl.style.color = "#4ade80";
+      const kod = d.aktivasyon_kodu || "";
+      sonucEl.innerHTML = "\u2705 Aktivasyon Kodu: <b style=\"font-family:Consolas;letter-spacing:1px;\">" + kod + "</b> <button class=\"btn btn-ghost btn-sm\" style=\"margin-left:8px;\" onclick=\"navigator.clipboard.writeText('" + kod + "').then(()=>notif('Kopyaland\u0131!'))\">&#128203; Kopyala</button>";
+      notif("Offline lisans \u00fcretildi.");
+    } else {
+      sonucEl.textContent = "\u274c " + (d.detail || "Hata olu\u015ftu.");
+      sonucEl.style.color = "#f87171";
+    }
+  }).catch(() => {
+    sonucEl.textContent = "\u274c Sunucu ile ileti\u015fim kurulamad\u0131.";
+    sonucEl.style.color = "#f87171";
+  });
+}
+
 // Startup
 document.getElementById("inp-kullanici").focus();
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") talepModalKapat();
+  if (e.key === "Escape") {
+    talepModalKapat();
+    yetkiliDuzenleModalKapat();
+    kullaniciDuzenleModalKapat();
+  }
 });
 </script>
 </body>
