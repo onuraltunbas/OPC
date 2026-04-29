@@ -1376,6 +1376,12 @@ class GatewayWorker(QThread):
         self._calisıyor = True
         # Optional CSV logging path (None = disabled)
         self.csv_path = None
+        # Performance tuning knobs (STA-safe: single COM worker stays unchanged)
+        self.read_timeout_sec = 1.0
+        self.chunk_read_timeout_sec = 0.5
+        self.chunk_size = 20
+        self.verbose_data_log = False
+        self._last_read_stats = {}
 
     def _log(self, metin):
         self.log_sinyali.emit(str(metin))
@@ -1388,7 +1394,6 @@ class GatewayWorker(QThread):
         threading issues that cause "poisoned" connections).
         """
         import functools
-        from concurrent.futures import ThreadPoolExecutor
 
         sonuclar = {}
         loop = asyncio.get_running_loop()
@@ -1402,11 +1407,22 @@ class GatewayWorker(QThread):
                 v = v[0]
             return v
 
+        # timing + diagnostics
+        read_started = time.monotonic()
+        timeout_count = 0
+        mode = "bulk"
+
         # 1) Try one-shot bulk read in the OPC executor (fastest when supported)
         ham = None
         try:
             if opc is not None:
-                ham = await loop.run_in_executor(executor, opc.read, etiket_listesi)
+                ham = await asyncio.wait_for(
+                    loop.run_in_executor(executor, opc.read, etiket_listesi),
+                    timeout=self.read_timeout_sec
+                )
+        except asyncio.TimeoutError:
+            timeout_count += 1
+            ham = None
         except Exception:
             ham = None
 
@@ -1439,7 +1455,13 @@ class GatewayWorker(QThread):
                         self._log("OPC bağlantısı yeniden kuruldu (yeniden deneme).")
                         # try bulk read again once
                         try:
-                            ham = await loop.run_in_executor(executor, opc.read, etiket_listesi)
+                            ham = await asyncio.wait_for(
+                                loop.run_in_executor(executor, opc.read, etiket_listesi),
+                                timeout=self.read_timeout_sec
+                            )
+                        except asyncio.TimeoutError:
+                            timeout_count += 1
+                            ham = None
                         except Exception:
                             ham = None
                         await asyncio.sleep(0.2)
@@ -1478,57 +1500,76 @@ class GatewayWorker(QThread):
             # fall through to per-tag reads on any unexpected error
             pass
 
-        # 2) Fallback: per-tag reads using executor with limited concurrency
-        sem = asyncio.Semaphore(min(8, max(1, len(etiket_listesi))))
+        # 2) Fallback: STA-safe chunked reads with short deadlines.
+        # Keep single COM worker thread; optimize by reducing blocking scope.
+        mode = "chunked_fallback"
+        chunk_size = max(1, int(self.chunk_size))
+        chunks = [etiket_listesi[i:i + chunk_size] for i in range(0, len(etiket_listesi), chunk_size)]
 
         def _flatten(v):
             while isinstance(v, (list, tuple)) and v:
                 v = v[0]
             return v
 
-        async def _read_et(et):
-            async with sem:
-                client = getattr(self, "_opc", opc)
-                try:
-                    res = await loop.run_in_executor(executor, client.read, et)
-                    if res and res[0] is not None:
-                        val = _flatten(res[0])
-                        ts = str(res[2]) if len(res) > 2 else str(res[1])
+        client = getattr(self, "_opc", opc)
+        for chunk in chunks:
+            if client is None:
+                for et in chunk:
+                    sonuclar[et] = (None, None, None)
+                continue
+            try:
+                res = await asyncio.wait_for(
+                    loop.run_in_executor(executor, client.read, chunk),
+                    timeout=self.chunk_read_timeout_sec
+                )
+                if isinstance(res, list):
+                    for et, veri in zip(chunk, res):
+                        try:
+                            if veri and veri[0] is not None:
+                                raw_val = _flatten(veri[0])
+                                ts = str(veri[2]) if len(veri) > 2 else str(veri[1])
+                                sonuclar[et] = (raw_val, veri[1], ts)
+                            else:
+                                sonuclar[et] = (None, None, None)
+                        except Exception:
+                            sonuclar[et] = (None, None, None)
+                else:
+                    for et in chunk:
+                        sonuclar[et] = (None, None, None)
+            except asyncio.TimeoutError:
+                timeout_count += 1
+                for et in chunk:
+                    sonuclar[et] = (None, None, None)
+            except Exception:
+                # Narrow fallback: only on failed chunk try per-tag reads
+                for et in chunk:
+                    try:
+                        tag_res = await asyncio.wait_for(
+                            loop.run_in_executor(executor, client.read, et),
+                            timeout=min(self.chunk_read_timeout_sec, 0.25)
+                        )
+                        if tag_res and tag_res[0] is not None:
+                            sonuclar[et] = (
+                                _flatten(tag_res[0]),
+                                tag_res[1],
+                                str(tag_res[2]) if len(tag_res) > 2 else str(tag_res[1]),
+                            )
+                        else:
+                            sonuclar[et] = (None, None, None)
+                    except Exception:
+                        try:
+                            prop_call = functools.partial(getattr(client, "properties", lambda *a, **k: None), et, id=2)
+                            prop = await loop.run_in_executor(executor, prop_call)
+                            sonuclar[et] = (prop, "Good", "N/A") if prop is not None else (None, None, None)
+                        except Exception:
+                            sonuclar[et] = (None, None, None)
 
-                        # If the returned value is suspiciously equal to the tag name
-                        # (e.g. 'Random.Real8'), try a quick re-read to let the server
-                        # stabilize. This handles cases where the first read after a
-                        # reconnect returns metadata instead of the real value.
-                        if isinstance(val, str) and val.strip() == et.strip():
-                            for _ in range(2):
-                                await asyncio.sleep(0.05)
-                                try:
-                                    retry = await loop.run_in_executor(executor, client.read, et)
-                                    if retry and retry[0] is not None:
-                                        rval = _flatten(retry[0])
-                                        if not (isinstance(rval, str) and rval.strip() == et.strip()):
-                                            val = rval
-                                            ts = str(retry[2]) if len(retry) > 2 else str(retry[1])
-                                            break
-                                except Exception:
-                                    continue
-
-                        return et, (val, res[1], ts)
-                except Exception:
-                    pass
-                try:
-                    prop_call = functools.partial(getattr(client, "properties", lambda *a, **k: None), et, id=2)
-                    prop = await loop.run_in_executor(executor, prop_call)
-                    if prop is not None:
-                        return et, (prop, "Good", "N/A")
-                except Exception:
-                    pass
-                return et, (None, None, None)
-
-        tasks = [_read_et(et) for et in etiket_listesi]
-        results = await asyncio.gather(*tasks)
-        for et, val in results:
-            sonuclar[et] = val
+        self._last_read_stats = {
+            "mode": mode,
+            "timeouts": timeout_count,
+            "elapsed_ms": int((time.monotonic() - read_started) * 1000),
+            "tag_count": len(etiket_listesi),
+        }
         return sonuclar
 
     def run(self):
@@ -1643,6 +1684,7 @@ class GatewayWorker(QThread):
             csv_buffer = []
             last_gui_send = time.monotonic()
             last_csv_write = time.monotonic()
+            last_perf_log = time.monotonic()
 
             def _coerce_numeric(v):
                 try:
@@ -1672,8 +1714,10 @@ class GatewayWorker(QThread):
                     return None
 
             while self._calisıyor:
+                cycle_started = time.monotonic()
                 # Non-blocking bulk read
                 okumalar = await self._toplu_oku(etiket_listesi)
+                read_elapsed_ms = int((time.monotonic() - cycle_started) * 1000)
                 satirlar = []
                 gorevler = []
                 now_iso = datetime.datetime.now().isoformat()
@@ -1693,18 +1737,22 @@ class GatewayWorker(QThread):
                     if num is not None:
                         try:
                             gorevler.append(node.write_value(num, ua.VariantType.Double))
-                            satirlar.append(f"OK {et}: {num:.4f} [{kalite}]")
+                            if self.verbose_data_log:
+                                satirlar.append(f"OK {et}: {num:.4f} [{kalite}]")
                             if self.csv_path:
                                 csv_buffer.append((now_iso, et, num, str(kalite)))
                         except Exception:
                             satirlar.append(f"ERROR {et}: Yazma hatasi")
                     else:
-                        satirlar.append(f"INFO {et}: {deger} (metin)")
+                        if self.verbose_data_log:
+                            satirlar.append(f"INFO {et}: {deger} (metin)")
                         if self.csv_path:
                             csv_buffer.append((now_iso, et, str(deger), str(kalite)))
 
+                write_started = time.monotonic()
                 if gorevler:
                     await asyncio.gather(*gorevler)
+                write_elapsed_ms = int((time.monotonic() - write_started) * 1000)
 
                 # Buffer GUI lines and send at most 2 Hz
                 if satirlar:
@@ -1719,6 +1767,21 @@ class GatewayWorker(QThread):
                         pass
                     gui_buffer.clear()
                     last_gui_send = now_mon
+
+                # Perf summary log once per second (production-friendly)
+                if (now_mon - last_perf_log) >= 1.0:
+                    stats = getattr(self, "_last_read_stats", {}) or {}
+                    cycle_elapsed_ms = int((time.monotonic() - cycle_started) * 1000)
+                    self._log(
+                        "PERF "
+                        f"tags={len(etiket_listesi)} "
+                        f"read={read_elapsed_ms}ms "
+                        f"write={write_elapsed_ms}ms "
+                        f"cycle={cycle_elapsed_ms}ms "
+                        f"timeouts={stats.get('timeouts', 0)} "
+                        f"mode={stats.get('mode', 'n/a')}"
+                    )
+                    last_perf_log = now_mon
 
                 # Flush CSV buffer once per second (append mode)
                 if self.csv_path and (now_mon - last_csv_write) >= CSV_INTERVAL and csv_buffer:
