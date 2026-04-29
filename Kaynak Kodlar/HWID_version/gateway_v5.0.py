@@ -1374,37 +1374,66 @@ class GatewayWorker(QThread):
         self.etiketler  = etiketler
         self.yetki      = yetki # yetki kaydedildi
         self._calisıyor = True
+        # Optional CSV logging path (None = disabled)
+        self.csv_path = None
 
     def _log(self, metin):
         self.log_sinyali.emit(str(metin))
 
-    def _toplu_oku(self, opc, etiket_listesi):
+    async def _toplu_oku(self, opc, etiket_listesi):
+        """
+        Non-blocking bulk read helper. Tries a single bulk `opc.read(list)` call
+        offloaded to a thread executor; if that fails, falls back to per-tag
+        reads performed via `run_in_executor` with limited concurrency.
+        Returns a dict: {tag: (value, quality, timestamp_or_str)}
+        """
+        import functools
         sonuclar = {}
+        loop = asyncio.get_running_loop()
+
+        # 1) Try one-shot bulk read in executor (fastest when supported)
         try:
-            ham = opc.read(etiket_listesi)
+            ham = await loop.run_in_executor(None, opc.read, etiket_listesi)
             if ham and isinstance(ham, list):
                 for et, veri in zip(etiket_listesi, ham):
-                    sonuclar[et] = (veri[0], veri[1], str(veri[2])) \
-                        if veri and veri[0] is not None else (None, None, None)
+                    try:
+                        if veri and veri[0] is not None:
+                            ts = str(veri[2]) if len(veri) > 2 else str(veri[1])
+                            sonuclar[et] = (veri[0], veri[1], ts)
+                        else:
+                            sonuclar[et] = (None, None, None)
+                    except Exception:
+                        sonuclar[et] = (None, None, None)
                 return sonuclar
         except Exception:
+            # Bulk read not supported or failed; fall back
             pass
-        for et in etiket_listesi:
-            try:
-                sonuc = opc.read(et)
-                if sonuc and sonuc[0] is not None:
-                    sonuclar[et] = (sonuc[0], sonuc[1], str(sonuc[2]))
-                    continue
-            except Exception:
-                pass
-            try:
-                deger = opc.properties(et, id=2)
-                if deger is not None:
-                    sonuclar[et] = (deger, "Good", "N/A")
-                    continue
-            except Exception:
-                pass
-            sonuclar[et] = (None, None, None)
+
+        # 2) Fallback: per-tag reads using executor with limited concurrency
+        sem = asyncio.Semaphore(min(8, max(1, len(etiket_listesi))))
+
+        async def _read_et(et):
+            async with sem:
+                try:
+                    res = await loop.run_in_executor(None, opc.read, et)
+                    if res and res[0] is not None:
+                        ts = str(res[2]) if len(res) > 2 else str(res[1])
+                        return et, (res[0], res[1], ts)
+                except Exception:
+                    pass
+                try:
+                    # opc.properties may require a kwarg; use partial to pass safely
+                    prop = await loop.run_in_executor(None, functools.partial(opc.properties, et, id=2))
+                    if prop is not None:
+                        return et, (prop, "Good", "N/A")
+                except Exception:
+                    pass
+                return et, (None, None, None)
+
+        tasks = [_read_et(et) for et in etiket_listesi]
+        results = await asyncio.gather(*tasks)
+        for et, val in results:
+            sonuclar[et] = val
         return sonuclar
 
     def run(self):
@@ -1468,10 +1497,22 @@ class GatewayWorker(QThread):
             etiket_listesi = list(etiket_haritasi.keys())
             hata_sayaci = {}
 
+            # Batching & throttling parameters
+            GUI_INTERVAL = 0.5    # max GUI updates per second (2 Hz)
+            CSV_INTERVAL = 1.0    # write CSV once per second
+            SLEEP_INTERVAL = 0.05 # 50 ms throttle to avoid 100% CPU
+
+            gui_buffer = []
+            csv_buffer = []
+            last_gui_send = time.monotonic()
+            last_csv_write = time.monotonic()
+
             while self._calisıyor:
-                okumalar = self._toplu_oku(opc, etiket_listesi)
+                # Non-blocking bulk read
+                okumalar = await self._toplu_oku(opc, etiket_listesi)
                 satirlar = []
                 gorevler = []
+                now_iso = datetime.datetime.now().isoformat()
 
                 for et in etiket_listesi:
                     deger, kalite, _ = okumalar.get(et, (None, None, None))
@@ -1479,21 +1520,57 @@ class GatewayWorker(QThread):
                     if deger is None:
                         hata_sayaci[et] = hata_sayaci.get(et, 0) + 1
                         satirlar.append(f"UYARI {et}: Veri yok ({hata_sayaci[et]}x)")
+                        # record missing value as row if CSV enabled
+                        if self.csv_path:
+                            csv_buffer.append((now_iso, et, "", "NO_DATA"))
                         continue
                     hata_sayaci[et] = 0
                     try:
                         num = float(deger)
                         gorevler.append(node.write_value(num, ua.VariantType.Double))
                         satirlar.append(f"OK {et}: {num:.4f} [{kalite}]")
+                        if self.csv_path:
+                            csv_buffer.append((now_iso, et, num, str(kalite)))
                     except (ValueError, TypeError):
                         satirlar.append(f"INFO {et}: {deger} (metin)")
+                        if self.csv_path:
+                            csv_buffer.append((now_iso, et, str(deger), str(kalite)))
 
                 if gorevler:
                     await asyncio.gather(*gorevler)
 
-                self._log("\n".join(satirlar))
-                self._log("-" * 60)
-                await asyncio.sleep(0.1)
+                # Buffer GUI lines and send at most 2 Hz
+                if satirlar:
+                    gui_buffer.extend(satirlar)
+
+                now_mon = time.monotonic()
+                if (now_mon - last_gui_send) >= GUI_INTERVAL and gui_buffer:
+                    try:
+                        self._log("\n".join(gui_buffer))
+                        self._log("-" * 60)
+                    except Exception:
+                        pass
+                    gui_buffer.clear()
+                    last_gui_send = now_mon
+
+                # Flush CSV buffer once per second (append mode)
+                if self.csv_path and (now_mon - last_csv_write) >= CSV_INTERVAL and csv_buffer:
+                    try:
+                        import csv as _csv
+                        os.makedirs(os.path.dirname(self.csv_path), exist_ok=True)
+                        with open(self.csv_path, "a", newline='', encoding="utf-8") as f:
+                            writer = _csv.writer(f)
+                            for r in csv_buffer:
+                                writer.writerow(r)
+                    except Exception as e:
+                        try:
+                            self._log(f"CSV yazma hatasi: {e}")
+                        except Exception:
+                            pass
+                    csv_buffer.clear()
+                    last_csv_write = now_mon
+
+                await asyncio.sleep(SLEEP_INTERVAL)
 
             try:
                 opc.close()
