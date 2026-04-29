@@ -21,6 +21,7 @@ import tempfile
 import multiprocessing
 import ssl
 import time
+import heapq
 import hmac
 import base64
 import struct
@@ -1376,6 +1377,12 @@ class GatewayWorker(QThread):
         self._calisıyor = True
         # Optional CSV logging path (None = disabled)
         self.csv_path = None
+        # Performance tuning knobs (STA-safe: single COM worker stays unchanged)
+        self.read_timeout_sec = 1.8
+        self.chunk_read_timeout_sec = 0.8
+        self.chunk_size = 30
+        self.verbose_data_log = False
+        self._last_read_stats = {}
 
     def _log(self, metin):
         self.log_sinyali.emit(str(metin))
@@ -1388,7 +1395,6 @@ class GatewayWorker(QThread):
         threading issues that cause "poisoned" connections).
         """
         import functools
-        from concurrent.futures import ThreadPoolExecutor
 
         sonuclar = {}
         loop = asyncio.get_running_loop()
@@ -1402,11 +1408,52 @@ class GatewayWorker(QThread):
                 v = v[0]
             return v
 
+        def _normalize_read(et, rec):
+            """
+            Normalize OpenOPC read outputs.
+            Supports both:
+              - single tag tuple: (value, quality, timestamp)
+              - bulk tag tuple:   (tag, value, quality, timestamp)
+            """
+            try:
+                if not rec:
+                    return (None, None, None)
+                if isinstance(rec, (list, tuple)):
+                    if len(rec) >= 4 and isinstance(rec[0], str) and rec[0].strip() == et.strip():
+                        val = _flatten(rec[1])
+                        return (val, rec[2], str(rec[3]))
+                    val = _flatten(rec[0])
+                    qual = rec[1] if len(rec) > 1 else None
+                    ts = str(rec[2]) if len(rec) > 2 else str(qual)
+                    return (val, qual, ts)
+                return (_flatten(rec), "Good", "N/A")
+            except Exception:
+                return (None, None, None)
+
+        def _set_read_stats(local_mode, local_timeouts):
+            self._last_read_stats = {
+                "mode": local_mode,
+                "timeouts": local_timeouts,
+                "elapsed_ms": int((time.monotonic() - read_started) * 1000),
+                "tag_count": len(etiket_listesi),
+            }
+
+        # timing + diagnostics
+        read_started = time.monotonic()
+        timeout_count = 0
+        mode = "bulk"
+
         # 1) Try one-shot bulk read in the OPC executor (fastest when supported)
         ham = None
         try:
             if opc is not None:
-                ham = await loop.run_in_executor(executor, opc.read, etiket_listesi)
+                ham = await asyncio.wait_for(
+                    loop.run_in_executor(executor, opc.read, etiket_listesi),
+                    timeout=self.read_timeout_sec
+                )
+        except asyncio.TimeoutError:
+            timeout_count += 1
+            ham = None
         except Exception:
             ham = None
 
@@ -1439,7 +1486,13 @@ class GatewayWorker(QThread):
                         self._log("OPC bağlantısı yeniden kuruldu (yeniden deneme).")
                         # try bulk read again once
                         try:
-                            ham = await loop.run_in_executor(executor, opc.read, etiket_listesi)
+                            ham = await asyncio.wait_for(
+                                loop.run_in_executor(executor, opc.read, etiket_listesi),
+                                timeout=self.read_timeout_sec
+                            )
+                        except asyncio.TimeoutError:
+                            timeout_count += 1
+                            ham = None
                         except Exception:
                             ham = None
                         await asyncio.sleep(0.2)
@@ -1450,9 +1503,9 @@ class GatewayWorker(QThread):
             if ham and isinstance(ham, list):
                 for et, veri in zip(etiket_listesi, ham):
                     try:
-                        if veri and veri[0] is not None:
-                            raw_val = _flatten(veri[0])
-                            ts = str(veri[2]) if len(veri) > 2 else str(veri[1])
+                        nval, nqual, nts = _normalize_read(et, veri)
+                        if nval is not None:
+                            raw_val = nval
 
                             # If the server returned the tag name as the value
                             # (e.g. 'Random.Real8'), try a quick per-tag reread
@@ -1460,75 +1513,86 @@ class GatewayWorker(QThread):
                             if isinstance(raw_val, str) and raw_val.strip() == et.strip() and executor is not None and opc is not None:
                                 try:
                                     retry = await loop.run_in_executor(executor, opc.read, et)
-                                    if retry and retry[0] is not None:
-                                        rval = _flatten(retry[0])
+                                    rval, rqual, rts = _normalize_read(et, retry)
+                                    if rval is not None:
                                         if not (isinstance(rval, str) and rval.strip() == et.strip()):
-                                            sonuclar[et] = (rval, retry[1], str(retry[2]) if len(retry) > 2 else str(retry[1]))
+                                            sonuclar[et] = (rval, rqual, rts)
                                             continue
                                 except Exception:
                                     pass
 
-                            sonuclar[et] = (raw_val, veri[1], ts)
+                            sonuclar[et] = (raw_val, nqual, nts)
                         else:
                             sonuclar[et] = (None, None, None)
                     except Exception:
                         sonuclar[et] = (None, None, None)
+                _set_read_stats(mode, timeout_count)
                 return sonuclar
         except Exception:
             # fall through to per-tag reads on any unexpected error
             pass
 
-        # 2) Fallback: per-tag reads using executor with limited concurrency
-        sem = asyncio.Semaphore(min(8, max(1, len(etiket_listesi))))
+        # 2) Fallback: split-and-read.
+        # If a group fails as bulk, split it and retry; isolate bad tags instead of
+        # dropping to per-tag for the whole batch.
+        mode = "split_fallback"
+        client = getattr(self, "_opc", opc)
+        if client is None:
+            for et in etiket_listesi:
+                sonuclar[et] = (None, None, None)
+            _set_read_stats(mode, timeout_count)
+            return sonuclar
 
-        def _flatten(v):
-            while isinstance(v, (list, tuple)) and v:
-                v = v[0]
-            return v
+        def _group_timeout(n):
+            return max(0.25, min(2.5, 0.10 + 0.035 * max(1, int(n))))
 
-        async def _read_et(et):
-            async with sem:
-                client = getattr(self, "_opc", opc)
-                try:
-                    res = await loop.run_in_executor(executor, client.read, et)
-                    if res and res[0] is not None:
-                        val = _flatten(res[0])
-                        ts = str(res[2]) if len(res) > 2 else str(res[1])
+        pending = [list(etiket_listesi)]
+        while pending:
+            group = pending.pop(0)
+            if not group:
+                continue
+            try:
+                res = await asyncio.wait_for(
+                    loop.run_in_executor(executor, client.read, group),
+                    timeout=_group_timeout(len(group))
+                )
+                if isinstance(res, list) and len(res) == len(group):
+                    for et, veri in zip(group, res):
+                        nval, nqual, nts = _normalize_read(et, veri)
+                        sonuclar[et] = (nval, nqual, nts) if nval is not None else (None, None, None)
+                else:
+                    raise RuntimeError("bulk-length-mismatch")
+            except asyncio.TimeoutError:
+                timeout_count += 1
+                if len(group) == 1:
+                    sonuclar[group[0]] = (None, None, None)
+                else:
+                    mid = len(group) // 2
+                    pending.append(group[:mid])
+                    pending.append(group[mid:])
+            except Exception:
+                if len(group) == 1:
+                    et = group[0]
+                    try:
+                        tag_res = await asyncio.wait_for(
+                            loop.run_in_executor(executor, client.read, et),
+                            timeout=max(0.20, min(1.0, self.chunk_read_timeout_sec))
+                        )
+                        tval, tqual, tts = _normalize_read(et, tag_res)
+                        sonuclar[et] = (tval, tqual, tts) if tval is not None else (None, None, None)
+                    except Exception:
+                        try:
+                            prop_call = functools.partial(getattr(client, "properties", lambda *a, **k: None), et, id=2)
+                            prop = await loop.run_in_executor(executor, prop_call)
+                            sonuclar[et] = (prop, "Good", "N/A") if prop is not None else (None, None, None)
+                        except Exception:
+                            sonuclar[et] = (None, None, None)
+                else:
+                    mid = len(group) // 2
+                    pending.append(group[:mid])
+                    pending.append(group[mid:])
 
-                        # If the returned value is suspiciously equal to the tag name
-                        # (e.g. 'Random.Real8'), try a quick re-read to let the server
-                        # stabilize. This handles cases where the first read after a
-                        # reconnect returns metadata instead of the real value.
-                        if isinstance(val, str) and val.strip() == et.strip():
-                            for _ in range(2):
-                                await asyncio.sleep(0.05)
-                                try:
-                                    retry = await loop.run_in_executor(executor, client.read, et)
-                                    if retry and retry[0] is not None:
-                                        rval = _flatten(retry[0])
-                                        if not (isinstance(rval, str) and rval.strip() == et.strip()):
-                                            val = rval
-                                            ts = str(retry[2]) if len(retry) > 2 else str(retry[1])
-                                            break
-                                except Exception:
-                                    continue
-
-                        return et, (val, res[1], ts)
-                except Exception:
-                    pass
-                try:
-                    prop_call = functools.partial(getattr(client, "properties", lambda *a, **k: None), et, id=2)
-                    prop = await loop.run_in_executor(executor, prop_call)
-                    if prop is not None:
-                        return et, (prop, "Good", "N/A")
-                except Exception:
-                    pass
-                return et, (None, None, None)
-
-        tasks = [_read_et(et) for et in etiket_listesi]
-        results = await asyncio.gather(*tasks)
-        for et, val in results:
-            sonuclar[et] = val
+        _set_read_stats(mode, timeout_count)
         return sonuclar
 
     def run(self):
@@ -1633,16 +1697,42 @@ class GatewayWorker(QThread):
             self._log(f"{len(self.etiketler)} etiket UA'ya eklendi. Dongu basliyor...\n")
             etiket_listesi = list(etiket_haritasi.keys())
             hata_sayaci = {}
+            son_okuma = {}
 
             # Batching & throttling parameters
             GUI_INTERVAL = 0.5    # max GUI updates per second (2 Hz)
             CSV_INTERVAL = 1.0    # write CSV once per second
             SLEEP_INTERVAL = 0.05 # 50 ms throttle to avoid 100% CPU
+            BASE_POLL_INTERVAL = 0.20   # default per-tag poll target
+            MAX_POLL_INTERVAL = 10.0    # backoff ceiling for problematic tags
+            MIN_POLLED_PER_CYCLE = 6
+            MAX_POLLED_PER_CYCLE = 120
 
             gui_buffer = []
             csv_buffer = []
             last_gui_send = time.monotonic()
             last_csv_write = time.monotonic()
+            last_perf_log = time.monotonic()
+            cycle_index = 0
+            now0 = time.monotonic()
+            tag_state = {
+                et: {
+                    "next_due": now0,
+                    "interval": BASE_POLL_INTERVAL,
+                    "fail_streak": 0,
+                    "seq": 0,
+                }
+                for et in etiket_listesi
+            }
+            schedule_heap = []
+            for et in etiket_listesi:
+                st = tag_state[et]
+                heapq.heappush(schedule_heap, (st["next_due"], st["seq"], et))
+            self._log(
+                f"Adaptif poll aktif: tags={len(etiket_listesi)} "
+                f"base={BASE_POLL_INTERVAL}s max={MAX_POLL_INTERVAL}s"
+            )
+            poll_cap = min(MAX_POLLED_PER_CYCLE, max(MIN_POLLED_PER_CYCLE, len(etiket_listesi) // 5 or 1))
 
             def _coerce_numeric(v):
                 try:
@@ -1672,16 +1762,54 @@ class GatewayWorker(QThread):
                     return None
 
             while self._calisıyor:
+                cycle_started = time.monotonic()
+                cycle_index += 1
+                now_due = time.monotonic()
+                due_entries = []
+                while schedule_heap and len(due_entries) < poll_cap:
+                    due_ts, seq, et = heapq.heappop(schedule_heap)
+                    st = tag_state.get(et)
+                    if st is None:
+                        continue
+                    # stale heap entry: skip
+                    if seq != st["seq"] or due_ts != st["next_due"]:
+                        continue
+                    if due_ts > now_due:
+                        heapq.heappush(schedule_heap, (due_ts, seq, et))
+                        break
+                    lag_ms = max(0.0, (now_due - due_ts) * 1000.0)
+                    due_entries.append((et, lag_ms))
+
+                # If nothing is due yet, opportunistically poll one nearest tag.
+                if not due_entries and schedule_heap:
+                    due_ts, seq, et = heapq.heappop(schedule_heap)
+                    st = tag_state.get(et)
+                    if st is not None and seq == st["seq"] and due_ts == st["next_due"]:
+                        due_entries.append((et, max(0.0, (now_due - due_ts) * 1000.0)))
+                    else:
+                        heapq.heappush(schedule_heap, (due_ts, seq, et))
+
+                okunacak_etiketler = [et for et, _ in due_entries]
+                queue_lags_ms = [lag for _, lag in due_entries]
+                due_count = len(okunacak_etiketler)
                 # Non-blocking bulk read
-                okumalar = await self._toplu_oku(etiket_listesi)
+                okumalar = await self._toplu_oku(okunacak_etiketler)
+                son_okuma.update(okumalar)
+                read_elapsed_ms = int((time.monotonic() - cycle_started) * 1000)
                 satirlar = []
                 gorevler = []
                 now_iso = datetime.datetime.now().isoformat()
 
-                for et in etiket_listesi:
-                    deger, kalite, _ = okumalar.get(et, (None, None, None))
+                for et in okunacak_etiketler:
+                    deger, kalite, _ = son_okuma.get(et, (None, None, None))
                     node = etiket_haritasi[et]
                     if deger is None:
+                        st = tag_state[et]
+                        st["fail_streak"] = min(8, st["fail_streak"] + 1)
+                        st["interval"] = min(MAX_POLL_INTERVAL, BASE_POLL_INTERVAL * (2 ** st["fail_streak"]))
+                        st["next_due"] = now_due + st["interval"]
+                        st["seq"] += 1
+                        heapq.heappush(schedule_heap, (st["next_due"], st["seq"], et))
                         hata_sayaci[et] = hata_sayaci.get(et, 0) + 1
                         satirlar.append(f"UYARI {et}: Veri yok ({hata_sayaci[et]}x)")
                         # record missing value as row if CSV enabled
@@ -1689,22 +1817,42 @@ class GatewayWorker(QThread):
                             csv_buffer.append((now_iso, et, "", "NO_DATA"))
                         continue
                     hata_sayaci[et] = 0
+                    st = tag_state[et]
+                    st["fail_streak"] = 0
+                    st["interval"] = BASE_POLL_INTERVAL
+                    st["next_due"] = now_due + st["interval"]
+                    st["seq"] += 1
+                    heapq.heappush(schedule_heap, (st["next_due"], st["seq"], et))
                     num = _coerce_numeric(deger)
                     if num is not None:
                         try:
                             gorevler.append(node.write_value(num, ua.VariantType.Double))
-                            satirlar.append(f"OK {et}: {num:.4f} [{kalite}]")
+                            if self.verbose_data_log:
+                                satirlar.append(f"OK {et}: {num:.4f} [{kalite}]")
                             if self.csv_path:
                                 csv_buffer.append((now_iso, et, num, str(kalite)))
                         except Exception:
                             satirlar.append(f"ERROR {et}: Yazma hatasi")
                     else:
-                        satirlar.append(f"INFO {et}: {deger} (metin)")
+                        if self.verbose_data_log:
+                            satirlar.append(f"INFO {et}: {deger} (metin)")
                         if self.csv_path:
                             csv_buffer.append((now_iso, et, str(deger), str(kalite)))
 
+                write_started = time.monotonic()
                 if gorevler:
                     await asyncio.gather(*gorevler)
+                write_elapsed_ms = int((time.monotonic() - write_started) * 1000)
+
+                # Auto-tune poll cap by measured read latency (hardware-agnostic behavior)
+                if read_elapsed_ms > 900:
+                    poll_cap = max(MIN_POLLED_PER_CYCLE, poll_cap - 8)
+                elif read_elapsed_ms > 700:
+                    poll_cap = max(MIN_POLLED_PER_CYCLE, poll_cap - 4)
+                elif read_elapsed_ms < 250 and due_count >= poll_cap:
+                    poll_cap = min(MAX_POLLED_PER_CYCLE, poll_cap + 3)
+                elif read_elapsed_ms < 450 and due_count >= poll_cap:
+                    poll_cap = min(MAX_POLLED_PER_CYCLE, poll_cap + 1)
 
                 # Buffer GUI lines and send at most 2 Hz
                 if satirlar:
@@ -1719,6 +1867,29 @@ class GatewayWorker(QThread):
                         pass
                     gui_buffer.clear()
                     last_gui_send = now_mon
+
+                # Perf summary log every 2 seconds (readable cadence)
+                if (now_mon - last_perf_log) >= 2.0:
+                    stats = getattr(self, "_last_read_stats", {}) or {}
+                    cycle_elapsed_ms = int((time.monotonic() - cycle_started) * 1000)
+                    avg_queue_lag_ms = int(sum(queue_lags_ms) / len(queue_lags_ms)) if queue_lags_ms else 0
+                    max_queue_lag_ms = int(max(queue_lags_ms)) if queue_lags_ms else 0
+                    est_ua_delivery_ms = avg_queue_lag_ms + read_elapsed_ms + write_elapsed_ms
+                    self._log(
+                        "METRIK "
+                        f"tags={len(etiket_listesi)} "
+                        f"polled={len(okunacak_etiketler)} "
+                        f"cap={poll_cap} "
+                        f"read={read_elapsed_ms}ms "
+                        f"write={write_elapsed_ms}ms "
+                        f"cycle={cycle_elapsed_ms}ms "
+                        f"queueLagAvg={avg_queue_lag_ms}ms "
+                        f"queueLagMax={max_queue_lag_ms}ms "
+                        f"uaDeliveryEst={est_ua_delivery_ms}ms "
+                        f"timeouts={stats.get('timeouts', 0)} "
+                        f"mode={stats.get('mode', 'n/a')}"
+                    )
+                    last_perf_log = now_mon
 
                 # Flush CSV buffer once per second (append mode)
                 if self.csv_path and (now_mon - last_csv_write) >= CSV_INTERVAL and csv_buffer:
