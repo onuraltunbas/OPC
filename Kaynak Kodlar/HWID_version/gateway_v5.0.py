@@ -1380,50 +1380,145 @@ class GatewayWorker(QThread):
     def _log(self, metin):
         self.log_sinyali.emit(str(metin))
 
-    async def _toplu_oku(self, opc, etiket_listesi):
+    async def _toplu_oku(self, etiket_listesi):
         """
-        Non-blocking bulk read helper. Tries a single bulk `opc.read(list)` call
-        offloaded to a thread executor; if that fails, falls back to per-tag
-        reads performed via `run_in_executor` with limited concurrency.
-        Returns a dict: {tag: (value, quality, timestamp_or_str)}
+        Robust bulk read helper using a dedicated single-thread executor
+        for OpenOPC COM calls. This ensures all COM interactions happen on
+        the same thread where the client was created (mitigates DCOM/COM
+        threading issues that cause "poisoned" connections).
         """
         import functools
+        from concurrent.futures import ThreadPoolExecutor
+
         sonuclar = {}
         loop = asyncio.get_running_loop()
+        executor = getattr(self, "_opc_executor", None)
 
-        # 1) Try one-shot bulk read in executor (fastest when supported)
+        # local reference to current client (may be replaced on reconnect)
+        opc = getattr(self, "_opc", None)
+
+        def _flatten(v):
+            while isinstance(v, (list, tuple)) and v:
+                v = v[0]
+            return v
+
+        # 1) Try one-shot bulk read in the OPC executor (fastest when supported)
+        ham = None
         try:
-            ham = await loop.run_in_executor(None, opc.read, etiket_listesi)
+            if opc is not None:
+                ham = await loop.run_in_executor(executor, opc.read, etiket_listesi)
+        except Exception:
+            ham = None
+
+        # If we got a list, inspect for excessive missing values (poisoned connection)
+        try:
+            if ham and isinstance(ham, list):
+                missing = sum(1 for v in ham if (not v) or v[0] is None)
+                # If a large portion of the bulk read is missing, assume connection
+                # was poisoned and try to recreate the client once (in the same executor)
+                if missing and missing >= max(1, len(ham) // 2):
+                    try:
+                        await loop.run_in_executor(executor, getattr(opc, "close", lambda: None))
+                    except Exception:
+                        pass
+                    try:
+                        def _recreate():
+                            try:
+                                import pythoncom as _pythoncom
+                                _pythoncom.CoInitialize()
+                            except Exception:
+                                pass
+                            import OpenOPC as _OpenOPC
+                            c = _OpenOPC.client()
+                            c.connect(self.prog_id)
+                            return c
+
+                        new_opc = await loop.run_in_executor(executor, _recreate)
+                        self._opc = new_opc
+                        opc = new_opc
+                        self._log("OPC bağlantısı yeniden kuruldu (yeniden deneme).")
+                        # try bulk read again once
+                        try:
+                            ham = await loop.run_in_executor(executor, opc.read, etiket_listesi)
+                        except Exception:
+                            ham = None
+                        await asyncio.sleep(0.2)
+                    except Exception:
+                        ham = None
+
+            # If bulk read returned usable data, normalize and return
             if ham and isinstance(ham, list):
                 for et, veri in zip(etiket_listesi, ham):
                     try:
                         if veri and veri[0] is not None:
+                            raw_val = _flatten(veri[0])
                             ts = str(veri[2]) if len(veri) > 2 else str(veri[1])
-                            sonuclar[et] = (veri[0], veri[1], ts)
+
+                            # If the server returned the tag name as the value
+                            # (e.g. 'Random.Real8'), try a quick per-tag reread
+                            # in the same executor to obtain the real value.
+                            if isinstance(raw_val, str) and raw_val.strip() == et.strip() and executor is not None and opc is not None:
+                                try:
+                                    retry = await loop.run_in_executor(executor, opc.read, et)
+                                    if retry and retry[0] is not None:
+                                        rval = _flatten(retry[0])
+                                        if not (isinstance(rval, str) and rval.strip() == et.strip()):
+                                            sonuclar[et] = (rval, retry[1], str(retry[2]) if len(retry) > 2 else str(retry[1]))
+                                            continue
+                                except Exception:
+                                    pass
+
+                            sonuclar[et] = (raw_val, veri[1], ts)
                         else:
                             sonuclar[et] = (None, None, None)
                     except Exception:
                         sonuclar[et] = (None, None, None)
                 return sonuclar
         except Exception:
-            # Bulk read not supported or failed; fall back
+            # fall through to per-tag reads on any unexpected error
             pass
 
         # 2) Fallback: per-tag reads using executor with limited concurrency
         sem = asyncio.Semaphore(min(8, max(1, len(etiket_listesi))))
 
+        def _flatten(v):
+            while isinstance(v, (list, tuple)) and v:
+                v = v[0]
+            return v
+
         async def _read_et(et):
             async with sem:
+                client = getattr(self, "_opc", opc)
                 try:
-                    res = await loop.run_in_executor(None, opc.read, et)
+                    res = await loop.run_in_executor(executor, client.read, et)
                     if res and res[0] is not None:
+                        val = _flatten(res[0])
                         ts = str(res[2]) if len(res) > 2 else str(res[1])
-                        return et, (res[0], res[1], ts)
+
+                        # If the returned value is suspiciously equal to the tag name
+                        # (e.g. 'Random.Real8'), try a quick re-read to let the server
+                        # stabilize. This handles cases where the first read after a
+                        # reconnect returns metadata instead of the real value.
+                        if isinstance(val, str) and val.strip() == et.strip():
+                            for _ in range(2):
+                                await asyncio.sleep(0.05)
+                                try:
+                                    retry = await loop.run_in_executor(executor, client.read, et)
+                                    if retry and retry[0] is not None:
+                                        rval = _flatten(retry[0])
+                                        if not (isinstance(rval, str) and rval.strip() == et.strip()):
+                                            val = rval
+                                            ts = str(retry[2]) if len(retry) > 2 else str(retry[1])
+                                            break
+                                except Exception:
+                                    continue
+
+                        return et, (val, res[1], ts)
                 except Exception:
                     pass
                 try:
-                    # opc.properties may require a kwarg; use partial to pass safely
-                    prop = await loop.run_in_executor(None, functools.partial(opc.properties, et, id=2))
+                    prop_call = functools.partial(getattr(client, "properties", lambda *a, **k: None), et, id=2)
+                    prop = await loop.run_in_executor(executor, prop_call)
                     if prop is not None:
                         return et, (prop, "Good", "N/A")
                 except Exception:
@@ -1442,7 +1537,30 @@ class GatewayWorker(QThread):
             import pythoncom, OpenOPC, pywintypes
 
             def _pickle_pytime(dt):
-                return (pywintypes.Time, (int(dt),))
+                """Make pywintypes time objects picklable for multiprocessing queues.
+
+                The incoming `dt` can be numeric, a Python datetime, or a
+                pywintypes.datetime. Try several conversions and fall back
+                to epoch 0 if all fail to avoid exceptions during pickling.
+                """
+                try:
+                    # numeric-like (already seconds)
+                    return (pywintypes.Time, (int(dt),))
+                except Exception:
+                    pass
+                try:
+                    # datetime-like objects often have timestamp()
+                    if hasattr(dt, "timestamp"):
+                        return (pywintypes.Time, (int(dt.timestamp()),))
+                except Exception:
+                    pass
+                try:
+                    # fallback: use timetuple -> epoch
+                    import time as _time
+                    return (pywintypes.Time, (int(_time.mktime(dt.timetuple())),))
+                except Exception:
+                    # last resort: zero epoch
+                    return (pywintypes.Time, (0,))
             copyreg.pickle(type(pywintypes.Time(0)), _pickle_pytime)
 
             loop = asyncio.new_event_loop()
@@ -1471,14 +1589,33 @@ class GatewayWorker(QThread):
         kok = await srv.nodes.objects.add_object(idx, "Saha_Verileri")
 
         async with srv:
+            loop = asyncio.get_running_loop()
             self._log(f"OPC UA Sunucusu yayinda: {endpoint}")
-            pythoncom.CoInitialize()
+            # Create a dedicated single-thread executor for OpenOPC COM interactions
+            # so that the client is always accessed from the same thread.
+            from concurrent.futures import ThreadPoolExecutor
+            self._opc_executor = ThreadPoolExecutor(max_workers=1)
             try:
-                opc = OpenOPC.client()
-                opc.connect(self.prog_id)
+                def _create_client():
+                    try:
+                        import pythoncom as _pythoncom
+                        _pythoncom.CoInitialize()
+                    except Exception:
+                        pass
+                    import OpenOPC as _OpenOPC
+                    c = _OpenOPC.client()
+                    c.connect(self.prog_id)
+                    return c
+
+                opc = await loop.run_in_executor(self._opc_executor, _create_client)
+                self._opc = opc
                 self._log(f"OPC DA baglandi: {self.prog_id}")
             except Exception as e:
                 self._log(f"OPC DA baglanti hatasi: {e}")
+                try:
+                    self._opc_executor.shutdown(wait=False)
+                except Exception:
+                    pass
                 return
 
             etiket_haritasi = {}
@@ -1507,9 +1644,36 @@ class GatewayWorker(QThread):
             last_gui_send = time.monotonic()
             last_csv_write = time.monotonic()
 
+            def _coerce_numeric(v):
+                try:
+                    if v is None:
+                        return None
+                    if isinstance(v, bool):
+                        return 1.0 if v else 0.0
+                    if isinstance(v, (int, float)):
+                        return float(v)
+                    if isinstance(v, str):
+                        s = v.strip()
+                        if not s:
+                            return None
+                        sl = s.lower()
+                        if sl in ("true", "1", "yes"):
+                            return 1.0
+                        if sl in ("false", "0", "no"):
+                            return 0.0
+                        # try normalized numeric (comma -> dot)
+                        s2 = s.replace(' ', '').replace(',', '.')
+                        try:
+                            return float(s2)
+                        except Exception:
+                            return None
+                    return None
+                except Exception:
+                    return None
+
             while self._calisıyor:
                 # Non-blocking bulk read
-                okumalar = await self._toplu_oku(opc, etiket_listesi)
+                okumalar = await self._toplu_oku(etiket_listesi)
                 satirlar = []
                 gorevler = []
                 now_iso = datetime.datetime.now().isoformat()
@@ -1525,13 +1689,16 @@ class GatewayWorker(QThread):
                             csv_buffer.append((now_iso, et, "", "NO_DATA"))
                         continue
                     hata_sayaci[et] = 0
-                    try:
-                        num = float(deger)
-                        gorevler.append(node.write_value(num, ua.VariantType.Double))
-                        satirlar.append(f"OK {et}: {num:.4f} [{kalite}]")
-                        if self.csv_path:
-                            csv_buffer.append((now_iso, et, num, str(kalite)))
-                    except (ValueError, TypeError):
+                    num = _coerce_numeric(deger)
+                    if num is not None:
+                        try:
+                            gorevler.append(node.write_value(num, ua.VariantType.Double))
+                            satirlar.append(f"OK {et}: {num:.4f} [{kalite}]")
+                            if self.csv_path:
+                                csv_buffer.append((now_iso, et, num, str(kalite)))
+                        except Exception:
+                            satirlar.append(f"ERROR {et}: Yazma hatasi")
+                    else:
                         satirlar.append(f"INFO {et}: {deger} (metin)")
                         if self.csv_path:
                             csv_buffer.append((now_iso, et, str(deger), str(kalite)))
@@ -1573,7 +1740,16 @@ class GatewayWorker(QThread):
                 await asyncio.sleep(SLEEP_INTERVAL)
 
             try:
-                opc.close()
+                client = getattr(self, "_opc", None)
+                executor = getattr(self, "_opc_executor", None)
+                if client is not None:
+                    await loop.run_in_executor(executor, getattr(client, "close", lambda: None))
+            except Exception:
+                pass
+            try:
+                exe = getattr(self, "_opc_executor", None)
+                if exe is not None:
+                    exe.shutdown(wait=False)
             except Exception:
                 pass
             self._log("Gateway durduruldu.")
