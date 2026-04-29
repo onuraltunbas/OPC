@@ -838,25 +838,21 @@ def uyelik_turleri_public(s: Session = Depends(db)):
     return [{"kod": t.kod, "ad": t.ad, "aciklama": t.aciklama} for t in s.query(UyelikTuru).filter_by(aktif=True).order_by(UyelikTuru.sira).all()]
 
 @app.get("/api/program-indir")
-def program_indir(request: Request, s: Session = Depends(db)):
-    kid = get_kullanici_id(request)
-    if not kid: raise HTTPException(status_code=401, detail="Giriş yapmalısınız.")
-    k = s.query(Kullanici).filter_by(id=kid).first()
-    if not k: raise HTTPException(status_code=401, detail="Geçersiz kullanıcı.")
-    
-    lisans = s.query(Lisans).filter_by(musteri_email=k.email).order_by(Lisans.olusturma_tar.desc()).first()
-    
-    kalan = safe_days_left(lisans.bitis_tarihi) if lisans else None
-    aktif_mi = bool(lisans and lisans.aktif and (kalan is None or kalan >= 0))
-    
-    if not aktif_mi:
-        raise HTTPException(status_code=403, detail="Aktif lisansınız bulunmuyor.")
-        
-    exe_path = os.path.join("dosyalar", "OPC_Gateway_Pro.exe")
-    if not os.path.exists(exe_path):
-        raise HTTPException(status_code=404, detail="Program dosyası sunucuda bulunamadı.")
-        
-    return FileResponse(exe_path, media_type="application/vnd.microsoft.portable-executable", filename="OPC_Gateway_Pro.exe")
+def program_indir():
+  exe_path = os.path.join("dosyalar", "OPC_Gateway_Pro.exe")
+  if not os.path.exists(exe_path):
+    raise HTTPException(status_code=404, detail="Program dosyası sunucuda bulunamadı.")
+  return FileResponse(exe_path, media_type="application/vnd.microsoft.portable-executable", filename="OPC_Gateway_Pro.exe")
+
+
+@app.get("/api/public-info")
+def public_info():
+  exe_path = os.path.join("dosyalar", "OPC_Gateway_Pro.exe")
+  return {
+    "indirme_linki": "/api/program-indir" if os.path.exists(exe_path) else None,
+    "vt_hash": get_exe_hash(),
+    "son_guncelleme": get_exe_date()
+  }
 
 
 # =====================================================================
@@ -3356,9 +3352,12 @@ SITE_HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <nav class="nav">
-  <div class="nav-brand">
-    <div class="dot"></div>
-    OPC Gateway
+  <div class="nav-brand" style="display:flex;align-items:center;gap:12px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div class="dot"></div>
+      <div style="font-weight:700;">OPC Gateway</div>
+    </div>
+    <div id="nav-quick-links" style="display:flex;align-items:center;gap:8px;"></div>
   </div>
   <div class="nav-links" id="nav-links">
     <button class="nav-btn nav-btn-ghost" onclick="sayfaGoster('giris')">Giriş Yap</button>
@@ -4246,6 +4245,27 @@ let _sitePollTimer = null;
     const banner = document.getElementById('cerez-banner');
     banner.style.display = 'flex';
   }
+})();
+</script>
+
+<script>
+(async function(){
+  try {
+    const r = await fetch("/api/public-info");
+    if (!r.ok) return;
+    const d = await r.json();
+    const q = document.getElementById("nav-quick-links");
+    if (!q) return;
+    q.innerHTML = "";
+    if (d.indirme_linki) {
+      q.innerHTML += `<a href="${d.indirme_linki}" style="display:inline-flex;align-items:center;gap:6px;background:linear-gradient(90deg,#06b6d4,#3b82f6);color:#fff;padding:6px 10px;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none;">⬇ İndir</a>`;
+    } else {
+      q.innerHTML += `<a href="#" onclick="alert('Program sunucuda mevcut değil.')" style="display:inline-flex;align-items:center;gap:6px;background:#ef44447a;color:#fff;padding:6px 10px;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none;">⬇ İndir</a>`;
+    }
+    if (d.vt_hash) {
+      q.innerHTML += `<a href="https://www.virustotal.com/gui/file/${d.vt_hash}" target="_blank" style="display:inline-flex;align-items:center;gap:6px;background:#111;color:#fff;padding:6px 10px;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none;margin-left:6px;">🛡️ VT</a>`;
+    }
+  } catch(e) {}
 })();
 </script>
 </body>
