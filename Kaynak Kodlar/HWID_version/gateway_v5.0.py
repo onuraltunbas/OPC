@@ -374,32 +374,16 @@ class OfflineLisansYoneticisi:
         except Exception:
             pass
 
-    # ── Zaman hilesi tespiti ──
+    # ── Saat geri kontrolü (Soft-Lock) ──
 
     @staticmethod
-    def _zaman_hilesi_mi(son_giris_ts: float) -> bool:
+    def _saat_geri_mi(son_giris_ts: float) -> bool:
+        """Sistem saati son kayıtlı girişten 30 saniyeden fazla geriye alındıysa True döner.
+        Tespit edildiğinde dosyaya DOKUNULMAZ; sadece geçici uyarı gösterilir."""
         now = time.time()
-        if now < son_giris_ts - 30:      # Takvim geri alındı
+        if now < son_giris_ts - 30:   # Takvim/saat geriye alındı
             return True
-        try:
-            GTC64 = ctypes.windll.kernel32.GetTickCount64
-            GTC64.restype = ctypes.c_ulonglong
-            uptime_sn = GTC64() / 1000.0
-            gecen     = now - son_giris_ts
-            # Uptime reboot sınırından çok daha kısa + saat farkı > 30 dk → şüpheli
-            if gecen > 1800 and uptime_sn < gecen - 1800:
-                return True
-        except Exception:
-            pass
         return False
-
-    # ── TAMPERED kalıcı kilidi ──
-
-    def _tampered_kilitle(self):
-        lisans = self._lisans_oku() or {}
-        lisans["tampered"]    = True
-        lisans["tampered_ts"] = time.time()
-        self._lisans_kaydet(lisans)
 
     # ── ACT kodu doğrulama ve aktivasyon ──
 
@@ -448,7 +432,6 @@ class OfflineLisansYoneticisi:
             "bitis_ts":     now_ts + sure_gun * 86400,
             "son_giris_ts": now_ts,
             "imza":         imza,
-            "tampered":     False,
         }
         self._lisans_kaydet(lisans)
         self._burnin_ekle(imza)
@@ -458,7 +441,12 @@ class OfflineLisansYoneticisi:
 
     def dogrula(self):
         """Döndürür: (durum: str, yetki: str)
-        durum: 'gecerli' | 'aktivasyon' | 'tampered' | 'hata:...'"""
+        durum: 'gecerli' | 'aktivasyon' | 'saat_geri' | 'hata:...'
+
+        NOT: 'tampered' (kalıcı kilit) artık KULLANILMAZ.
+        Saat geriye alınmışsa yalnızca 'saat_geri' döner; lisans dosyasına
+        dokunulmaz. Saat düzeltilince program kaldığı yerden devam eder.
+        """
         _debugger_kontrol()
 
         lisans     = self._lisans_oku()
@@ -467,36 +455,41 @@ class OfflineLisansYoneticisi:
         if not lisans:
             return "aktivasyon", ""
 
+        # Geçiş uyumluluğu: eski sürümlerde 'tampered' alanı kalıcı kilitleme yapıyordu.
+        # Yeni soft-lock mimarisinde bu alan anlamlı değil; varsa temizle ve devam et.
         if lisans.get("tampered"):
-            return "tampered", ""
+            lisans.pop("tampered", None)
+            lisans.pop("tampered_ts", None)
+            self._lisans_kaydet(lisans)
 
-        # Registry vs dosya tutarlılık
+        # Registry vs dosya tutarlılık — uyumsuzlukta dosyaya dokunmadan hata dön
         if reg_lisans:
             if reg_lisans.get("hwid_hash") != lisans.get("hwid_hash"):
-                self._tampered_kilitle(); return "tampered", ""
+                return "hata:Lisans kaydında tutarsızlık tespit edildi. Lütfen satıcıyla iletişime geçin.", ""
             if reg_lisans.get("imza") != lisans.get("imza"):
-                self._tampered_kilitle(); return "tampered", ""
+                return "hata:Lisans kaydında tutarsızlık tespit edildi. Lütfen satıcıyla iletişime geçin.", ""
 
         # HWID eşleşmesi
         if lisans.get("hwid_hash") != self.hwid_hash:
             self._lisans_sil()
             return "hata:Bu offline lisans başka bir bilgisayara aittir.", ""
 
-        # Zaman hilesi
-        if self._zaman_hilesi_mi(lisans.get("son_giris_ts", 0)):
-            self._tampered_kilitle(); return "tampered", ""
+        # ── Saat geri kontrolü (Soft-Lock) ──
+        # Tespit edilirse dosyaya DOKUNULMAZ; kullanıcı saati düzeltince devam eder.
+        if self._saat_geri_mi(lisans.get("son_giris_ts", 0)):
+            return "saat_geri", ""
 
-        # Süre kontrolü
+        # Süre kontrolü — yalnızca bitis_ts geçtiyse lisans dolmuş sayılır
         if time.time() > lisans.get("bitis_ts", 0):
             self._lisans_sil()
             return "hata:Offline lisans süreniz dolmuştur.", ""
 
-        # İmza bütünlük kontrolü
+        # İmza bütünlük kontrolü — uyumsuzlukta dosyaya dokunmadan hata dön
         imza = lisans.get("imza", "")
         if not imza or len(imza) != 16:
-            self._tampered_kilitle(); return "tampered", ""
+            return "hata:Lisans imzası geçersiz. Lütfen satıcıyla iletişime geçin.", ""
 
-        # Son girişi güncelle
+        # Son girişi güncelle (sadece doğrulama başarılıysa)
         lisans["son_giris_ts"] = time.time()
         self._lisans_kaydet(lisans)
 
@@ -1195,6 +1188,25 @@ class Ui_MainWindow(object):
         )
         lay_konsol.addWidget(self.txt_konsol)
 
+        # ── Tepsiye Küçült butonu (sağ üst köşe) ──
+        self.btn_tepsi = QtWidgets.QPushButton("⬇  Tepsiye Küçült", self.centralwidget)
+        self.btn_tepsi.setGeometry(660, 4, 150, 26)
+        self.btn_tepsi.setStyleSheet("""
+            QPushButton {
+                background-color: #1a1d2e;
+                color: #8a9bc0;
+                border: 1px solid #2a2d3e;
+                border-radius: 5px;
+                font-size: 11px;
+                padding: 0 6px;
+            }
+            QPushButton:hover {
+                background-color: #222540;
+                color: #5b8cff;
+                border-color: #5b8cff;
+            }
+        """)
+
         MainWindow.setCentralWidget(self.centralwidget)
         MainWindow.setWindowTitle(f"OPC DA -> OPC UA Gateway v{VERSIYON}")
 
@@ -1514,6 +1526,10 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self.btn_etiket_tara.clicked.connect(self._etiket_tara)
         self.btn_baslat.clicked.connect(self._baslat)
         self.btn_durdur.clicked.connect(self._durdur)
+        self.btn_tepsi.clicked.connect(self._tepsiye_kukult)
+
+        # Sistem tepsisi kurulumu
+        self._tray_kur()
 
         # Arka plan lisans kontrolcüsünü bağla (sadece online modda aktif)
         self._lisans_kontrolcusu = lisans_kontrolcusu
@@ -1721,7 +1737,84 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             # Kullanıcı aktivasyon penceresini kapattı → çıkış
             QtWidgets.QApplication.quit()
 
+    # ── Sistem Tepsisi ──
+
+    def _tray_kur(self):
+        """QSystemTrayIcon oluşturur; mevcut uygulama ikonunu veya fallback ikonu kullanır."""
+        from PyQt5.QtWidgets import QSystemTrayIcon, QMenu, QAction
+        from PyQt5.QtGui import QIcon
+
+        # İkon: varsa logo.ico, yoksa Qt'nin dahili bir ikonu
+        if hasattr(sys, '_MEIPASS'):
+            icon_path = os.path.join(sys._MEIPASS, 'logo.ico')
+        else:
+            icon_path = 'logo.ico'
+
+        if os.path.exists(icon_path):
+            tray_icon = QIcon(icon_path)
+        else:
+            tray_icon = self.style().standardIcon(
+                QtWidgets.QStyle.SP_ComputerIcon
+            )
+
+        self._tray = QSystemTrayIcon(tray_icon, self)
+        self._tray.setToolTip(f"OPC DA → OPC UA Gateway v{VERSIYON}")
+
+        # Tray menüsü
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1a1d2e;
+                color: #e0e0e0;
+                border: 1px solid #2a2d3e;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QMenu::item { padding: 6px 18px; border-radius: 3px; }
+            QMenu::item:selected { background-color: #5b8cff; color: white; }
+            QMenu::separator { height: 1px; background: #2a2d3e; margin: 4px 6px; }
+        """)
+
+        act_goster = menu.addAction("⬆  Pencereyi Göster")
+        act_goster.triggered.connect(self._pencereye_geri_al)
+        menu.addSeparator()
+        act_cikis = menu.addAction("✕  Çıkış")
+        act_cikis.triggered.connect(self._gercek_cikis)
+
+        self._tray.setContextMenu(menu)
+        # Tray ikonuna çift tıklayınca pencereyi geri aç
+        self._tray.activated.connect(self._tray_tikla)
+        self._tray.show()
+
+    def _tray_tikla(self, reason):
+        from PyQt5.QtWidgets import QSystemTrayIcon
+        if reason == QSystemTrayIcon.DoubleClick:
+            self._pencereye_geri_al()
+
+    def _tepsiye_kukult(self):
+        """Pencereyi gizler, program sistem tepsisinde çalışmaya devam eder."""
+        self.hide()
+        if hasattr(self, '_tray'):
+            self._tray.showMessage(
+                "OPC Gateway",
+                "Program sistem tepsisinde çalışıyor. Geri almak için çift tıklayın.",
+                self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon),
+                3000
+            )
+
+    def _pencereye_geri_al(self):
+        """Pencereyi tepsiden geri açar, öne getirir."""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _gercek_cikis(self):
+        """Tray menüsündeki Çıkış — tüm kaynakları temizler ve programı kapatır."""
+        self._tray_cikis = True   # closeEvent'in tepsiye gitmesini engelle
+        self.close()
+
     def closeEvent(self, event):
+        # X butonuna basınca direkt kapat — tepsiye küçülme SADECE btn_tepsi ile yapılır.
         if self.worker and self.worker.isRunning():
             self.worker.durdur()
             self.worker.wait(3000)
@@ -1730,7 +1823,10 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             self._lisans_kontrolcusu.wait(3000)
         if hasattr(self, "_debugger_timer"):
             self._debugger_timer.stop()
+        if hasattr(self, "_tray"):
+            self._tray.hide()
         event.accept()
+
 
 
 # =====================================================================
@@ -1767,14 +1863,15 @@ def _offline_akis(app):
     durum, yetki = oly.dogrula()
     splash.hide()
 
-    if durum == "tampered":
-        QMessageBox.critical(
-            None, "Güvenlik İhlali",
-            "Lisans dosyasında yetkisiz değişiklik tespit edildi.\n"
-            "Program güvenlik nedeniyle çalışamaz.\n"
-            "Satıcıyla iletişime geçin."
+    if durum == "saat_geri":
+        QMessageBox.warning(
+            None, "Güvenlik Uyarısı - Sistem Saati",
+            "Güvenlik İhlali: Sistem saati geriye alınmış veya hatalı!\n\n"
+            "Lütfen bilgisayarınızın saatini güncelleyip\n"
+            "(internetten eşitleyip) programı tekrar başlatın.\n\n"
+            "Kalan lisans süreniz güvendedir."
         )
-        sys.exit(2)
+        sys.exit(0)
 
     elif durum == "aktivasyon":
         aktiv = OfflineAktivasyonPenceresi(oly)
