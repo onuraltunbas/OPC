@@ -3166,6 +3166,79 @@ body { background-image: radial-gradient(ellipse at 20% 50%, #0d1a4020 0%, trans
   .dash-grid { grid-template-columns: 1fr; }
   .msg-split { grid-template-columns: 1fr; }
 }
+
+/* ===== ÇEREZ BANNER ===== */
+#cerez-banner {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 9999;
+  background: #0e1221; border-top: 1px solid #1a2040;
+  padding: 20px 32px; display: flex; align-items: flex-start; gap: 24px;
+  box-shadow: 0 -8px 40px rgba(0,0,0,0.5);
+  animation: cerezSlideUp 0.35s cubic-bezier(.22,1,.36,1);
+}
+@keyframes cerezSlideUp {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+#cerez-banner.cerez-gizle {
+  animation: cerezSlideDown 0.3s ease forwards;
+}
+@keyframes cerezSlideDown {
+  to { transform: translateY(110%); opacity: 0; }
+}
+.cerez-icerik { flex: 1; }
+.cerez-baslik { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.cerez-aciklama { font-size: 13px; color: var(--muted); line-height: 1.65; max-width: 640px; }
+.cerez-aciklama a { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.cerez-aksiyonlar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; margin-top: 4px; }
+.cerez-btn { padding: 9px 20px; border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; font-family: 'Sora', sans-serif; transition: all 0.18s; white-space: nowrap; }
+.cerez-btn-tum     { background: linear-gradient(135deg, var(--accent), #5b8fff); color: #fff; }
+.cerez-btn-tum:hover { opacity: 0.88; transform: translateY(-1px); }
+.cerez-btn-zorunlu { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+.cerez-btn-zorunlu:hover { color: var(--text); border-color: var(--accent); }
+.cerez-btn-reddet  { background: transparent; color: #f87171; border: 1px solid #ef444433; }
+.cerez-btn-reddet:hover { background: #ef444412; border-color: #f87171; }
+.cerez-btn-ayarlar { background: transparent; color: var(--accent); border: 1px solid #3d6fff44; }
+.cerez-btn-ayarlar:hover { background: #3d6fff12; }
+
+/* Çerez Tercih Modalı */
+#cerez-modal-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  background: rgba(0,0,0,0.75); backdrop-filter: blur(6px);
+  display: none; align-items: center; justify-content: center; padding: 16px;
+}
+#cerez-modal-overlay.aktif { display: flex; }
+#cerez-modal {
+  background: #0e1221; border: 1px solid #1a2040; border-radius: 16px;
+  width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto;
+  padding: 32px;
+}
+.cerez-modal-baslik { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+.cerez-modal-sub { font-size: 13px; color: var(--muted); margin-bottom: 24px; line-height: 1.6; }
+.cerez-kategori { background: #080b14; border: 1px solid #1a2040; border-radius: 10px; padding: 16px 18px; margin-bottom: 12px; }
+.cerez-kat-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cerez-kat-ad { font-size: 14px; font-weight: 600; color: var(--text); }
+.cerez-kat-acik { font-size: 12px; color: var(--muted); line-height: 1.55; }
+.cerez-toggle { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
+.cerez-toggle input { opacity: 0; width: 0; height: 0; }
+.cerez-toggle-slider {
+  position: absolute; inset: 0; border-radius: 24px;
+  background: #1a2040; cursor: pointer; transition: background 0.2s;
+}
+.cerez-toggle-slider::before {
+  content: ''; position: absolute; width: 18px; height: 18px; border-radius: 50%;
+  background: #5a6a8a; bottom: 3px; left: 3px; transition: all 0.2s;
+}
+.cerez-toggle input:checked + .cerez-toggle-slider { background: #3d6fff44; border: 1px solid #3d6fff88; }
+.cerez-toggle input:checked + .cerez-toggle-slider::before { transform: translateX(18px); background: var(--accent); box-shadow: 0 0 8px #3d6fff88; }
+.cerez-toggle input:disabled + .cerez-toggle-slider { opacity: 0.6; cursor: not-allowed; }
+.cerez-zorunlu-etiket { font-size: 11px; color: #4ade80; background: #22c55e15; border: 1px solid #22c55e33; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.cerez-modal-alt { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; flex-wrap: wrap; }
+
+@media (max-width: 600px) {
+  #cerez-banner { flex-direction: column; padding: 16px; gap: 14px; }
+  .cerez-aksiyonlar { width: 100%; justify-content: stretch; }
+  .cerez-btn { flex: 1; text-align: center; }
+}
 </style>
 """
 
@@ -3178,6 +3251,109 @@ SITE_HTML_TEMPLATE = """<!DOCTYPE html>
 {CSS}
 </head>
 <body>
+
+<!-- ===== ÇEREZ ONAYI BANNER ===== -->
+<div id="cerez-banner" style="display:none;">
+  <div class="cerez-icerik">
+    <div class="cerez-baslik">🍪 Çerez Politikası</div>
+    <div class="cerez-aciklama">
+      Bu site yalnızca <strong>zorunlu oturum çerezleri</strong> kullanmaktadır. Oturum çerezi, giriş yaptıktan sonra kimliğinizi doğrulamak için gereklidir; reklam, izleme veya pazarlama amaçlı herhangi bir çerez kullanılmamaktadır.
+      <a onclick="cerezAyarlariAc()">Çerez tercihlerini yönet →</a>
+    </div>
+  </div>
+  <div class="cerez-aksiyonlar">
+    <button class="cerez-btn cerez-btn-tum"     onclick="cerezKabulEt('tum')">Tümünü Kabul Et</button>
+    <button class="cerez-btn cerez-btn-zorunlu" onclick="cerezKabulEt('zorunlu')">Yalnızca Zorunlu</button>
+    <button class="cerez-btn cerez-btn-reddet"  onclick="cerezKabulEt('reddet')">Reddet</button>
+    <button class="cerez-btn cerez-btn-ayarlar" onclick="cerezAyarlariAc()">Tercihler</button>
+  </div>
+</div>
+
+<!-- ===== ÇEREZ TERCİH MODALI ===== -->
+<div id="cerez-modal-overlay">
+  <div id="cerez-modal">
+    <div class="cerez-modal-baslik">🍪 Çerez Tercihleri</div>
+    <div class="cerez-modal-sub">
+      Aşağıdaki kategorileri dilediğiniz gibi etkinleştirip devre dışı bırakabilirsiniz.
+      Zorunlu çerezler sitenin temel işlevleri için gereklidir ve devre dışı bırakılamaz.
+    </div>
+
+    <!-- Zorunlu Çerezler -->
+    <div class="cerez-kategori">
+      <div class="cerez-kat-header">
+        <div>
+          <div class="cerez-kat-ad">Zorunlu Çerezler</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="cerez-zorunlu-etiket">Her Zaman Aktif</span>
+          <label class="cerez-toggle">
+            <input type="checkbox" checked disabled>
+            <span class="cerez-toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="cerez-kat-acik">
+        <strong>session</strong> — Giriş yaptıktan sonra kimliğinizi doğrulamak için kullanılır. 7 gün boyunca geçerlidir.
+        Oturum kapatıldığında veya süre dolduğunda otomatik olarak silinir. Bu çerez olmadan sisteme giriş yapamazsınız.
+      </div>
+    </div>
+
+    <!-- Fonksiyonel Çerezler -->
+    <div class="cerez-kategori">
+      <div class="cerez-kat-header">
+        <div>
+          <div class="cerez-kat-ad">Fonksiyonel Çerezler</div>
+        </div>
+        <label class="cerez-toggle">
+          <input type="checkbox" id="cerez-toggle-fonk" checked>
+          <span class="cerez-toggle-slider"></span>
+        </label>
+      </div>
+      <div class="cerez-kat-acik">
+        <strong>cookie_consent</strong> — Çerez tercihlerinizi hatırlamak için kullanılır (1 yıl geçerli).
+        Bu çerezi devre dışı bırakırsanız her ziyarette tekrar onay kutusu görüntülenir.
+      </div>
+    </div>
+
+    <!-- Analitik -->
+    <div class="cerez-kategori" style="opacity:0.6;">
+      <div class="cerez-kat-header">
+        <div>
+          <div class="cerez-kat-ad">Analitik Çerezler</div>
+        </div>
+        <label class="cerez-toggle">
+          <input type="checkbox" id="cerez-toggle-analitik" disabled>
+          <span class="cerez-toggle-slider"></span>
+        </label>
+      </div>
+      <div class="cerez-kat-acik">
+        Bu site şu an herhangi bir analitik çerez kullanmamaktadır. İleride eklenirse burada listelenecektir.
+      </div>
+    </div>
+
+    <!-- Pazarlama -->
+    <div class="cerez-kategori" style="opacity:0.6;">
+      <div class="cerez-kat-header">
+        <div>
+          <div class="cerez-kat-ad">Pazarlama / Reklam Çerezleri</div>
+        </div>
+        <label class="cerez-toggle">
+          <input type="checkbox" id="cerez-toggle-reklam" disabled>
+          <span class="cerez-toggle-slider"></span>
+        </label>
+      </div>
+      <div class="cerez-kat-acik">
+        Bu site herhangi bir reklam veya izleme çerezi kullanmamaktadır.
+      </div>
+    </div>
+
+    <div class="cerez-modal-alt">
+      <button class="cerez-btn cerez-btn-zorunlu" onclick="cerezModalKapat()">İptal</button>
+      <button class="cerez-btn cerez-btn-reddet"  onclick="cerezKabulEt('reddet')">Reddet</button>
+      <button class="cerez-btn cerez-btn-tum"     onclick="cerezAyarlariKaydet()">Seçimlerimi Kaydet</button>
+    </div>
+  </div>
+</div>
 
 <nav class="nav">
   <div class="nav-brand">
@@ -3997,6 +4173,78 @@ let _sitePollTimer = null;
     const p = await r.json();
     document.getElementById("nav-links").innerHTML = `<span style="font-size:13px;color:var(--muted);margin-right:8px;">${p.email}</span><button class="nav-btn nav-btn-ghost" onclick="sayfaGoster('offline')" style="border-color:#3d6fff44;color:#7eb8ff;">🔒 Offline</button><button class="nav-btn nav-btn-ghost" onclick="cikisYap()">Cıkış</button>`;
     baslatSitePoll();
+  }
+})();
+
+// ===== ÇEREZ YÖNETİMİ =====
+(function() {
+  const CEREZ_ANAHTAR = 'cookie_consent';
+  const CEREZ_SURE    = 365; // gün
+
+  function cerezOku(ad) {
+    const esles = document.cookie.match('(?:^|; )' + ad.replace(/([.$?*|{}()[\]\\/+^])/g, '\\\\$1') + '=([^;]*)');
+    return esles ? decodeURIComponent(esles[1]) : null;
+  }
+
+  function cerezYaz(ad, deger, gun) {
+    const exp = new Date(Date.now() + gun * 864e5).toUTCString();
+    document.cookie = `${ad}=${encodeURIComponent(deger)}; expires=${exp}; path=/; SameSite=Lax`;
+  }
+
+  function bannerGizle() {
+    const b = document.getElementById('cerez-banner');
+    b.classList.add('cerez-gizle');
+    setTimeout(() => { b.style.display = 'none'; }, 320);
+  }
+
+  window.cerezKabulEt = function(tip) {
+    // 'reddet': sadece zorunlu çerezler aktif, fonksiyonel kaydedilmez
+    // 'zorunlu': zorunlu kabul, fonksiyonel hayır
+    // 'tum': hepsi kabul
+    const tercih = { zorunlu: true, fonksiyonel: tip === 'tum', verilen: tip, tarih: new Date().toISOString() };
+    if (tip !== 'reddet') {
+      cerezYaz(CEREZ_ANAHTAR, JSON.stringify(tercih), CEREZ_SURE);
+    } else {
+      // Reddet: tercih çerezini kaydetme ama banner'ı kapat (session boyunca hatırla)
+      sessionStorage.setItem(CEREZ_ANAHTAR, 'reddet');
+    }
+    bannerGizle();
+    cerezModalKapat();
+  };
+
+  window.cerezAyarlariAc = function() {
+    const mevcut = cerezOku(CEREZ_ANAHTAR);
+    if (mevcut) {
+      try {
+        const t = JSON.parse(mevcut);
+        const fonkEl = document.getElementById('cerez-toggle-fonk');
+        if (fonkEl) fonkEl.checked = !!t.fonksiyonel;
+      } catch(e) {}
+    }
+    document.getElementById('cerez-modal-overlay').classList.add('aktif');
+  };
+
+  window.cerezModalKapat = function() {
+    document.getElementById('cerez-modal-overlay').classList.remove('aktif');
+  };
+
+  window.cerezAyarlariKaydet = function() {
+    const fonk = document.getElementById('cerez-toggle-fonk').checked;
+    const tip  = fonk ? 'tum' : 'zorunlu';
+    cerezKabulEt(tip);
+  };
+
+  // Modal dışına tıklayınca kapat
+  document.getElementById('cerez-modal-overlay').addEventListener('click', function(e) {
+    if (e.target === this) cerezModalKapat();
+  });
+
+  // Banner göster/gizle kontrolü
+  const kayitli = cerezOku(CEREZ_ANAHTAR);
+  const sessionRed = sessionStorage.getItem(CEREZ_ANAHTAR);
+  if (!kayitli && !sessionRed) {
+    const banner = document.getElementById('cerez-banner');
+    banner.style.display = 'flex';
   }
 })();
 </script>
