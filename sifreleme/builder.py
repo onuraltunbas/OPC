@@ -5,7 +5,7 @@ import subprocess
 import marshal
 from cryptography.fernet import Fernet
 
-# 1. AYARLAR VE ÖZEL ALFABE
+
 CUSTOM_ALPHABET = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ汉字龙书Ω∑∞∫≈≠≤≥★♦♣♠♥♩♪♫♬♔♕♖♗♘♙♚♛♜♝♞"
 BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
@@ -16,7 +16,7 @@ def custom_encode(data: bytes) -> str:
 def build_simple_fortress():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     target_py = os.path.join(current_dir, '..', 'Kaynak Kodlar', 'HWID_version', 'gateway_v5.0.py')
-    output_name = "OPC_Gateway_Pro"
+    output_name = "Nautilus_Gateway"
     
     if not os.path.exists(target_py):
         print(f"[-] Hata: {target_py} bulunamadı!")
@@ -26,13 +26,12 @@ def build_simple_fortress():
     with open(target_py, 'rb') as f:
         original_code = f.read()
 
-    # 2. ŞİFRELEME (AES-128 Fernet)
-    # Her derlemede tamamen rastgele, tek kullanımlık bir anahtar üretilir
+
     key = Fernet.generate_key()
     compiled_code = marshal.dumps(compile(original_code, 'gateway', 'exec'))
     encrypted_payload = custom_encode(Fernet(key).encrypt(compiled_code))
 
-    # 3. KENDİ KENDİNİ ÇÖZEN LOADER (Sadece Anti-Debug ve Çözücü var, lisans yok)
+    
     loader_code = f"""
 import ctypes, sys, time, base64, marshal
 from cryptography.fernet import Fernet
@@ -69,13 +68,11 @@ if __name__ == "__main__":
     with open(temp_loader_path, "w", encoding="utf-8") as f:
         f.write(loader_code)
 
-   # 4. PYINSTALLER İLE EXE YAPMA
     print("[*] EXE derleniyor...")
     logo_path = os.path.join(current_dir, "logo.ico")
     ver_path = os.path.join(current_dir, "ver.txt")
     manifest_path = os.path.join(current_dir, "app.manifest")
-    
-    # Kütüphaneleri zorla EXE içine gömme listesi
+
     hidden_imports = [
         "--hidden-import=OpenOPC", 
         "--hidden-import=pywin32", 
@@ -98,15 +95,11 @@ if __name__ == "__main__":
         f"--icon={logo_path}",
         f"--version-file={ver_path}",
         f"--manifest={manifest_path}",
-        f"--add-data={logo_path};.",     # <--- İŞTE BU SATIR EKLENDİ (Logoyu içeri paketler)
+        f"--add-data={logo_path};.",
     ] + hidden_imports + [temp_loader_path]
     
-    # Derleme işlemini de sifreleme dizininde yapması için cwd ayarlıyoruz
     subprocess.run(pyinstaller_cmd, shell=True, cwd=current_dir)
-    
-    # Temizlik
     if os.path.exists(temp_loader_path): os.remove(temp_loader_path)
     print(f"\\n[+] BITTI! sifreleme/dist/{output_name}.exe hazir. Istedigin kisiye yollayabilirsin.")
-
 if __name__ == "__main__":
     build_simple_fortress()
