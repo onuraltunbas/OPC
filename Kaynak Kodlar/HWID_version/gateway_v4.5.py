@@ -55,37 +55,63 @@ from PyQt5.QtWidgets import QMessageBox, QDialog
 class HwidUretici:
 
     @staticmethod
-    def _wmic_calistir(komut):
+    def _get_smbios_uuid():
         try:
-            cikti = subprocess.check_output(
-                komut, shell=True,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                encoding="utf-8",
-                errors="replace"
-            )
-            satirlar = [s.strip() for s in cikti.strip().splitlines() if s.strip()]
-            if len(satirlar) >= 2:
-                return satirlar[-1]
-            return satirlar[0] if satirlar else ""
+            import ctypes
+            import uuid
+            kernel32 = ctypes.windll.kernel32
+            RSMB = 0x52534D42
+            size = kernel32.GetSystemFirmwareTable(RSMB, 0, None, 0)
+            if size == 0: return ""
+            buf = ctypes.create_string_buffer(size)
+            kernel32.GetSystemFirmwareTable(RSMB, 0, buf, size)
+            
+            table_data = buf.raw[8:]
+            idx = 0
+            while idx < len(table_data):
+                if idx + 4 > len(table_data): break
+                t_type = table_data[idx]
+                t_len = table_data[idx+1]
+                
+                if t_type == 1 and t_len >= 24:
+                    uuid_bytes = table_data[idx+8 : idx+24]
+                    return str(uuid.UUID(bytes_le=uuid_bytes)).upper()
+                
+                idx += t_len
+                while idx < len(table_data) - 1:
+                    if table_data[idx] == 0 and table_data[idx+1] == 0:
+                        idx += 2
+                        break
+                    idx += 1
+            return ""
         except Exception:
             return ""
 
     @staticmethod
+    def _get_cpu_id():
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            return str(winreg.QueryValueEx(key, "Identifier")[0])
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _get_machine_guid():
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography")
+            return str(winreg.QueryValueEx(key, "MachineGuid")[0])
+        except Exception:
+            return "BILINMIYOR"
+
+    @staticmethod
     def uret():
-        cpu_id  = HwidUretici._wmic_calistir("wmic cpu get ProcessorId")
-        mb_uuid = HwidUretici._wmic_calistir("wmic csproduct get UUID")
+        cpu_id  = HwidUretici._get_cpu_id()
+        mb_uuid = HwidUretici._get_smbios_uuid()
 
         if not cpu_id and not mb_uuid:
-            try:
-                import winreg
-                key = winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r"SOFTWARE\Microsoft\Cryptography"
-                )
-                mb_uuid = winreg.QueryValueEx(key, "MachineGuid")[0]
-            except Exception:
-                mb_uuid = "BILINMIYOR"
+            mb_uuid = HwidUretici._get_machine_guid()
 
         raw = f"{cpu_id}::{mb_uuid}::{UYGULAMA_SIFRESI}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32].upper()
