@@ -1,0 +1,66 @@
+===============================================================================
+NAUTILUS TECHNOLOGY - SON KULLANICI LİSANS SÖZLEŞMESİ (EULA)
+===============================================================================
+Ürün Adı: Nautilus OPC Gateway
+Sürüm: v5.0 (ve sonrasındaki tüm güncellemeler/yamalar)
+Lisans Veren (Şirket): Nautilus Technology
+Merkez Adresi: Türkiye / Kahramanmaraş
+İletişim ve Destek: https://nautilustechnology.com.tr/
+Telif Hakkı: (C) 2026 Nautilus Technology. Tüm Hakları Saklıdır.
+
+ÖNEMLİ UYARI: LÜTFEN BU YAZILIMI KURMADAN, KOPYALAMADAN VEYA KULLANMADAN ÖNCE AŞAĞIDAKİ ŞARTLARI VE HÜKÜMLERİ DİKKATLİCE OKUYUNUZ. 
+
+Bu Kapsamlı Son Kullanıcı Lisans Sözleşmesi ("Sözleşme" veya "EULA"), siz ("Kullanıcı", "Lisans Alan", "Müşteri") ve Türkiye/Kahramanmaraş merkezli Nautilus Technology ("Şirket", "Lisans Veren") arasında yasal olarak bağlayıcı bir sözleşmedir. Yazılımın "Kabul Ediyorum" seçeneğinin işaretlenmesi, sisteminize kurulması, kopyalanması veya herhangi bir şekilde kullanılması, bu Sözleşme'de yer alan tüm şartların Kullanıcı tarafından kayıtsız şartsız, gayrikabili rücu (geri dönülemez) şekilde kabul edildiği anlamına gelir.
+
+MADDE 1: TANIMLAR
+1.1. Yazılım: "Nautilus OPC Gateway" adını taşıyan, OPC DA (Data Access) protokolünden OPC UA (Unified Architecture) protokolüne veri köprüsü sağlayan; beraberinde gelen tüm kaynak kodları, derlenmiş dosyaları (exe, dll), kütüphaneleri, arayüzleri, dökümantasyonları ve Şirket tarafından sağlanan tüm güncellemeleri kapsayan endüstriyel iletişim paketidir.
+1.2. Donanım Kimliği (HWID): Yazılımın kurulduğu fiziksel veya sanal sunucunun anakart, işlemci, disk ve işletim sistemi bileşenlerine dayalı olarak üretilen, lisansın eşleştirildiği benzersiz kriptografik tanımlayıcıdır.
+1.3. Çevrimdışı (Air-Gapped) Kurulum: İnternet erişimi olmayan, dış ağlara kapalı endüstriyel ortamlarda yazılımın yerel şifreleme ve doğrulama yöntemleriyle yetkilendirilmesi işlemidir.
+
+MADDE 2: LİSANS VERİLMESİ VE KULLANIM KAPSAMI
+2.1. Şirket, bu Sözleşme şartlarına tam uyum sağlanması ve geçerli lisans ücretinin eksiksiz ödenmesi kaydıyla Kullanıcı'ya; geri alınabilir, münhasır olmayan (non-exclusive), devredilemez, alt lisanslanamaz ve yalnızca belirtilen Donanım Kimliğine (HWID) sahip tek bir donanımda kullanılmak üzere sınırlı bir kullanım lisansı verir.
+2.2. Yazılım, endüstriyel tesislerde, üretim bantlarında ve veri toplama merkezlerinde ticari olarak kullanılmak üzere tasarlanmıştır. Kullanıcı, yazılımı kendi iç ticari operasyonları için kullanabilir ancak yazılımı bir hizmet olarak (SaaS) üçüncü şahıslara sunamaz.
+2.3. Yazılımın "DEMO" veya "READ-ONLY" (Sadece Okuma) olarak lisanslanmış sürümlerinin ticari üretim ortamlarında veri manipülasyonu veya kalıcı veri aktarımı amacıyla kullanılması kesinlikle yasaktır.
+
+MADDE 3: KULLANIM KISITLAMALARI VE YASAKLAR
+Kullanıcı, aşağıda belirtilen eylemleri doğrudan yapmayacağını, personeline, yüklenicilerine veya herhangi bir üçüncü şahsa yaptırmayacağını peşinen kabul ve taahhüt eder:
+3.1. Yazılım'ın mülkiyetini, lisans kodlarını, aktivasyon dosyalarını veya yazılımın kendisini üçüncü şahıslara satmak, kiralamak, ödünç vermek, alt lisanslamak veya Şirket'in yazılı izni olmaksızın ticari olarak pazarlamak.
+3.2. Satın alınan lisans adedi veya tanımlanan HWID sınırları dışında kopyalama yapmak, Uygulama'yı sanal makine klonlama (VM cloning) yöntemleriyle haksız şekilde çoğaltmak.
+3.3. Yazılımın güvenliğini sağlayan mekanizmaları devre dışı bırakmak, atlatmak veya bu yönde girişimde bulunmak.
+3.4. Lisans süresini haksız yere uzatmak amacıyla işletim sistemini manipüle etmek.
+
+MADDE 4: FİKRİ MÜLKİYET
+4.1. Yazılımın mimarisi, kaynak kodları, algoritma yapıları, şifreleme modülleri, görsel tasarımları ve ticari markaları tamamen ve münhasıran Nautilus Technology'nin mülkiyetindedir. Yazılım hiçbir şekilde Kullanıcı'ya satılmamakta, yalnızca kullanım hakkı tahsis edilmektedir.
+
+MADDE 5: GERİ BİLDİRİM, ÖNERİLER VE FİKİR HAKLARI
+5.1. Kullanıcı tarafından Şirket'e sunulan, iletilen veya bildirilen her türlü geri bildirim, hata raporu (bug report), iyileştirme talebi, yeni özellik önerisi üzerinde Şirket tam, süresiz, evrensel ve koşulsuz hak sahibidir.
+5.2. Şirket, bu fikir ve önerileri Kullanıcı'ya herhangi bir lisans ücreti, telif hakkı, tazminat veya atıf sağlama yükümlülüğü olmaksızın Uygulama'yı geliştirmek, güncellemek veya yeni ticari ürünler üretmek amacıyla serbestçe ve bedelsiz olarak kullanabilir, değiştirebilir ve satabilir.
+
+MADDE 6: ENDÜSTRİYEL RİSKLER VE GARANTİ REDDİ (AS-IS BEYANI)
+6.1. Yazılım; Programlanabilir Mantık Denetleyicileri (PLC), SCADA sistemleri ve endüstriyel sensör ağları ile doğrudan iletişim kuran kritik bir köprü yazılımıdır. Şirket, Yazılım'ı "OLDUĞU GİBİ" (AS-IS) ve "MEVCUT HALİYLE" sunar.
+6.2. ŞİRKET; YAZILIMIN KESİNTİSİZ ÇALIŞACAĞINI, TAMAMEN HATASIZ OLDUĞUNU, DIŞ SALDIRILARA KARŞI %100 GÜVENLİ OLDUĞUNU VEYA BELİRLİ BİR AMACA UYGUNLUĞUNU AÇIK VEYA ZIMNİ OLARAK GARANTİ ETMEZ.
+
+MADDE 7: SORUMLULUĞUN SINIRLANDIRILMASI
+7.1. Yazılımın kullanımı sırasında veya sonucunda ortaya çıkabilecek; üretim duruşları, donanım arızaları, tesis hasarları, iş kaybı, kâr kaybı, veri bozulması veya güvenlik ihlallerinden kaynaklanan doğrudan, dolaylı, özel veya cezai HİÇBİR ZARARDAN NAUTILUS TECHNOLOGY SORUMLU TUTULAMAZ.
+7.2. Her halükarda ve tüm hukuki dayanaklar (sözleşme ihlali, haksız fiil, ihmal dahil) tahtında Nautilus Technology'nin Kullanıcı'ya karşı toplam mali sorumluluğu, Kullanıcı'nın bu Yazılım için son 12 (on iki) ay içerisinde Şirket'e fiilen ödemiş olduğu lisans bedelini hiçbir koşulda aşamaz.
+
+MADDE 8: GİZLİLİK, VERİ TOPLAMA VE TELEMETRİ
+8.1. Yazılım, yasadışı kullanımı engellemek, lisans doğrulamasını gerçekleştirmek ve sistem stabilitesini ölçmek amacıyla donanım profillerini (HWID), işletim sistemi sürümlerini, hata loglarını ve lisans durumlarını (eğer sistem çevrimiçi ise) Şirket sunucularına iletebilir.
+8.2. Çevrimdışı (Air-Gapped) ortamlarda bu veriler yerel lisans dosyalarında kriptografik olarak saklanır. Veri işleme politikalarımızın detayları için:
+Gizlilik Politikası URL: sonrabakilacak
+
+MADDE 9: DENETİM, LİSANS İPTALİ VE SOFT-LOCK
+9.1. Şirket, Yazılım'ın bu Sözleşme'ye uygun kullanılıp kullanılmadığını uzaktan telemetri verileriyle (çevrimiçi ise) veya aktivasyon dosyası (çevrimdışı ise) üzerinden denetleme hakkına sahiptir.
+9.2. Sistem seviyesinde yetkisiz müdahale tespit edildiğinde, Yazılım "Soft-Lock" durumuna geçerek çalışmayı durdurabilir. Şirket, ihlal tespiti halinde lisansı hiçbir ücret iadesi yapmaksızın tek taraflı iptal etme hakkını saklı tutar.
+
+MADDE 10: SÖZLEŞMENİN FESHİ
+10.1. Kullanıcı, dilediği zaman Yazılımı ve tüm donanımlardaki kopyalarını kalıcı olarak silerek bu Sözleşmeyi feshedebilir. 
+10.2. Kullanıcının Sözleşme şartlarından herhangi birini ihlal etmesi durumunda, Şirket herhangi bir resmi ihtara gerek kalmaksızın Sözleşmeyi ve lisans hakkını derhal feshedebilir. Fesih halinde Kullanıcı, Yazılımı kullanmayı durdurmak ve elindeki tüm kopyaları imha etmekle yükümlüdür. Fesih halinde lisans ücreti iadesi yapılmaz.
+
+MADDE 11: BÖLÜNEBİLİRLİK VE UYGULANACAK HUKUK
+11.1. Bu Sözleşme'nin herhangi bir hükmünün yetkili bir mahkeme tarafından geçersiz veya uygulanamaz bulunması halinde, söz konusu hüküm Sözleşme'nin amacına en yakın yasal ve geçerli bir hükümle değiştirilmiş sayılacak; Sözleşme'nin geri kalan hükümleri tam olarak yürürlükte kalmaya devam edecektir.
+11.2. Bu Sözleşme Türkiye Cumhuriyeti yasalarına tabidir.
+
+===============================================================================
+KULLANICI, YAZILIMI YÜKLEYEREK VEYA KULLANARAK BU SÖZLEŞMEYİ OKUDUĞUNU, ANLADIĞINI VE TÜM ŞARTLARA KENDİ ÖZGÜR İRADESİYLE BAĞLI OLDUĞUNU KABUL EDER.
+===============================================================================
