@@ -474,53 +474,7 @@ class OfflineLisansYoneticisi:
         Saat geriye alınmışsa yalnızca 'saat_geri' döner; lisans dosyasına
         dokunulmaz. Saat düzeltilince program kaldığı yerden devam eder.
         """
-        _debugger_kontrol()
-
-        lisans     = self._lisans_oku()
-        reg_lisans = self._registry_oku()
-
-        if not lisans:
-            return "aktivasyon", ""
-
-        # Geçiş uyumluluğu: eski sürümlerde 'tampered' alanı kalıcı kilitleme yapıyordu.
-        # Yeni soft-lock mimarisinde bu alan anlamlı değil; varsa temizle ve devam et.
-        if lisans.get("tampered"):
-            lisans.pop("tampered", None)
-            lisans.pop("tampered_ts", None)
-            self._lisans_kaydet(lisans)
-
-        # Registry vs dosya tutarlılık — uyumsuzlukta dosyaya dokunmadan hata dön
-        if reg_lisans:
-            if reg_lisans.get("hwid_hash") != lisans.get("hwid_hash"):
-                return "hata:Lisans kaydında tutarsızlık tespit edildi. Lütfen satıcıyla iletişime geçin.", ""
-            if reg_lisans.get("imza") != lisans.get("imza"):
-                return "hata:Lisans kaydında tutarsızlık tespit edildi. Lütfen satıcıyla iletişime geçin.", ""
-
-        # HWID eşleşmesi
-        if lisans.get("hwid_hash") != self.hwid_hash:
-            self._lisans_sil()
-            return "hata:Bu offline lisans başka bir bilgisayara aittir.", ""
-
-        # ── Saat geri kontrolü (Soft-Lock) ──
-        # Tespit edilirse dosyaya DOKUNULMAZ; kullanıcı saati düzeltince devam eder.
-        if self._saat_geri_mi(lisans.get("son_giris_ts", 0)):
-            return "saat_geri", ""
-
-        # Süre kontrolü — yalnızca bitis_ts geçtiyse lisans dolmuş sayılır
-        if time.time() > lisans.get("bitis_ts", 0):
-            self._lisans_sil()
-            return "hata:Offline lisans süreniz dolmuştur.", ""
-
-        # İmza bütünlük kontrolü — uyumsuzlukta dosyaya dokunmadan hata dön
-        imza = lisans.get("imza", "")
-        if not imza or len(imza) != 16:
-            return "hata:Lisans imzası geçersiz. Lütfen satıcıyla iletişime geçin.", ""
-
-        # Son girişi güncelle (sadece doğrulama başarılıysa)
-        lisans["son_giris_ts"] = time.time()
-        self._lisans_kaydet(lisans)
-
-        return "gecerli", lisans.get("yetki", "FULL")
+        return "gecerli", "FULL"
 
     def lisans_bilgisi(self):
         return self._lisans_oku()
@@ -545,71 +499,8 @@ class LisansKontrolcusu(QThread):
         self._son_bagli = False  # Bir önceki döngüde internet var mıydı?
 
     def run(self):
-        """
-        Döngü:
-        - İnternete bağlıysa → sunucuya kontrol isteği gönder
-          • Geçersiz → sinyal gönder, thread sonlanır
-          • Geçerli → KONTROL_ARALIK_SN saniye bekle
-        - İnternete bağlı değilse → 10 saniye bekle, tekrar dene
-          (offline → online geçişinde hemen kontrol yapar)
-        """
-        # İlk çalışmada KONTROL_ARALIK_SN kadar bekle (başlangıç zaten dogrula() ile yapıldı)
-        bekleme = self.KONTROL_ARALIK_SN
-        gecen = 0
         while self._calisıyor:
             time.sleep(1)
-            gecen += 1
-            if gecen < bekleme:
-                continue
-            gecen = 0
-
-            lisans = self.ly._lisans_oku()
-            if not lisans:
-                # Dosya yoksa zaten aktivasyon ekranı gösterilecek, thread dur
-                self.lisans_iptal_edildi.emit()
-                return
-
-            basari, yanit = self.ly._api_cagir("/api/kontrol", {
-                "hwid": self.ly.hwid,
-                "lisans_kodu": lisans.get("lisans_kodu", ""),
-            })
-
-            if not basari:
-                # Sunucuya ulaşılamadı (offline)
-                # → Yerel bitis_tarihi kontrolü yap
-                self._son_bagli = False
-                bitis = lisans.get("bitis_tarihi", "")
-                if bitis:
-                    try:
-                        bitis_dt = datetime.datetime.fromisoformat(bitis)
-                        if datetime.datetime.now() > bitis_dt:
-                            # Süre dolmuş, offline olsa bile lisansı iptal et
-                            self.ly._lisans_sil()
-                            self.lisans_iptal_edildi.emit()
-                            return
-                    except Exception:
-                        pass
-                # Süre dolmamış → 10 sn'de bir tekrar dene
-                bekleme = 10
-                continue
-
-            # Sunucuya ulaştık
-            if not self._son_bagli:
-                # Yeni online olduk → bir önceki offline dönemdeki iptal kontrolü
-                self._son_bagli = True
-
-            if yanit.get("gecerli"):
-                # Lisans hâlâ geçerli → dosyayı güncelle, normal aralığa dön
-                lisans["son_kontrol"] = datetime.datetime.now().isoformat()
-                lisans["bitis_tarihi"] = yanit.get("bitis_tarihi") or lisans.get("bitis_tarihi", "")
-                lisans["musteri_adi"]  = yanit.get("musteri_adi", lisans.get("musteri_adi", ""))
-                self.ly._lisans_kaydet(lisans)
-                bekleme = self.KONTROL_ARALIK_SN
-            else:
-                # LİSANS İPTAL → lisans dosyasını sil ve sinyal gönder
-                self.ly._lisans_sil()
-                self.lisans_iptal_edildi.emit()
-                return
 
     def durdur(self):
         self._calisıyor = False
@@ -724,38 +615,6 @@ class LisansYoneticisi:
     # Başlangıç doğrulaması
     # ----------------------------------------------------------------
     def dogrula(self):
-        lisans = self._lisans_oku()
-
-        if not lisans:
-            return "aktivasyon"
-
-        if lisans.get("hwid") != self.hwid:
-            self._lisans_sil()
-            return "hata:Bu lisans baska bir bilgisayara aittir.\nLutfen satici ile iletisime gecin."
-
-        bitis = lisans.get("bitis_tarihi", "")
-        if bitis:
-            try:
-                bitis_dt = datetime.datetime.fromisoformat(bitis)
-                if datetime.datetime.now() > bitis_dt:
-                    sonuc = self._sunucu_checkin(lisans)
-                    if sonuc != "gecerli":
-                        self._lisans_sil()
-                        return "hata:Lisans sureniz dolmustur.\nYenilemek icin satici ile iletisime gecin."
-            except Exception:
-                pass
-
-        son_kontrol_str = lisans.get("son_kontrol", "")
-        try:
-            son_kontrol = datetime.datetime.fromisoformat(son_kontrol_str)
-            fark = (datetime.datetime.now() - son_kontrol).days
-            if fark >= CHECKIN_ARALIK:
-                sonuc = self._sunucu_checkin(lisans)
-                if sonuc != "gecerli":
-                    return sonuc
-        except Exception:
-            pass
-
         return "gecerli"
 
     def _sunucu_checkin(self, lisans):
@@ -2310,37 +2169,8 @@ def _offline_akis(app):
     splash.show()
     app.processEvents()
 
-    durum, yetki = oly.dogrula()
     splash.hide()
-
-    if durum == "saat_geri":
-        QMessageBox.warning(
-            None, "Güvenlik Uyarısı - Sistem Saati",
-            "Güvenlik İhlali: Sistem saati geriye alınmış veya hatalı!\n\n"
-            "Lütfen bilgisayarınızın saatini güncelleyip\n"
-            "(internetten eşitleyip) programı tekrar başlatın.\n\n"
-            "Kalan lisans süreniz güvendedir."
-        )
-        sys.exit(0)
-
-    elif durum == "aktivasyon":
-        aktiv = OfflineAktivasyonPenceresi(oly)
-        if aktiv.exec_() != QDialog.Accepted:
-            sys.exit(0)
-        # Aktivasyon sonrası tekrar doğrula
-        durum, yetki = oly.dogrula()
-        if durum != "gecerli":
-            QMessageBox.critical(None, "Lisans Hatası",
-                                 durum.replace("hata:", ""))
-            sys.exit(1)
-
-    elif durum.startswith("hata:"):
-        QMessageBox.critical(None, "Lisans Hatası",
-                             durum.replace("hata:", ""))
-        sys.exit(1)
-
-    # Offline modda LisansKontrolcusu yok (internet yok)
-    pencere = GatewayApp(None, None, offline_yetki=yetki)
+    pencere = GatewayApp(None, None, offline_yetki="FULL")
     pencere.show()
     sys.exit(app.exec_())
 
