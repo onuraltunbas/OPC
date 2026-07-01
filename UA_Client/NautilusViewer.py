@@ -186,6 +186,7 @@ class UaClientWorker(QThread):
 
     def durdur(self):
         self._calisiyor = False
+        self.client = None  # Client referansını hemen bırak
 
 # =====================================================================
 # BÖLÜM 3: ARAYÜZ TASARIMI
@@ -274,7 +275,16 @@ class ClientApp(QtWidgets.QMainWindow):
         if not url:
             return
 
+        # Eski worker varsa önce düzgünce temizle
+        if self.worker is not None:
+            self._worker_baglantilari_kes(self.worker)
+            if self.worker.isRunning():
+                self.worker.durdur()
+                self.worker.wait(3000)  # En fazla 3 sn bekle
+            self.worker = None
+
         self.btn_baglan.setEnabled(False)
+        self.btn_kes.setEnabled(False)
         self.txt_url.setEnabled(False)
         self.tablo.setRowCount(0)
         self.etiket_satirlari.clear()
@@ -283,13 +293,43 @@ class ClientApp(QtWidgets.QMainWindow):
         self.worker.log_sinyali.connect(self._log)
         self.worker.baglan_sinyali.connect(self._baglanti_durumu)
         self.worker.veri_sinyali.connect(self._veri_guncelle)
+        # Thread bittiğinde UI'yi sıfırla
+        self.worker.finished.connect(self._worker_bitti)
         self.worker.start()
 
+    def _worker_baglantilari_kes(self, worker):
+        """Eski worker sinyallerini güvenli şekilde ayır."""
+        try:
+            worker.log_sinyali.disconnect(self._log)
+        except Exception:
+            pass
+        try:
+            worker.baglan_sinyali.disconnect(self._baglanti_durumu)
+        except Exception:
+            pass
+        try:
+            worker.veri_sinyali.disconnect(self._veri_guncelle)
+        except Exception:
+            pass
+        try:
+            worker.finished.disconnect(self._worker_bitti)
+        except Exception:
+            pass
+
+    @QtCore.pyqtSlot()
+    def _worker_bitti(self):
+        """Thread tamamen kapanınca Bağlan butonunu tekrar aktifleştir."""
+        self.btn_baglan.setEnabled(True)
+        self.btn_kes.setEnabled(False)
+        self.txt_url.setEnabled(True)
+        self._log("Bağlantı tamamen sonlandırıldı. Tekrar bağlanabilirsiniz.")
+
     def _kes(self):
-        if self.worker:
+        if self.worker and self.worker.isRunning():
             self.worker.durdur()
             self.btn_kes.setEnabled(False)
-            self._log("Durdurma sinyali gönderildi...")
+            self.btn_baglan.setEnabled(False)  # Worker bitmeden tekrar bağlanmayı engelle
+            self._log("Durdurma sinyali gönderildi, bağlantı kapatılıyor...")
 
     @QtCore.pyqtSlot(bool)
     def _baglanti_durumu(self, basarili):
@@ -297,9 +337,8 @@ class ClientApp(QtWidgets.QMainWindow):
             self.btn_baglan.setEnabled(False)
             self.btn_kes.setEnabled(True)
         else:
-            self.btn_baglan.setEnabled(True)
+            # Hata durumunda worker'ın finished sinyali zaten UI'yi sıfırlayacak
             self.btn_kes.setEnabled(False)
-            self.txt_url.setEnabled(True)
 
     @QtCore.pyqtSlot(str, str, str)
     def _veri_guncelle(self, node_id, deger, zaman):
@@ -329,8 +368,9 @@ class ClientApp(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
+            self._worker_baglantilari_kes(self.worker)
             self.worker.durdur()
-            self.worker.wait(2000)
+            self.worker.wait(3000)
         event.accept()
 
 if __name__ == "__main__":
