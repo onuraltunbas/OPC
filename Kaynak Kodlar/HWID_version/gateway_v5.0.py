@@ -39,6 +39,7 @@ UYGULAMA_SIFRESI = "admin1234"
 LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "lisans.json")
 CHECKIN_ARALIK   = 7
 VERSIYON         = "4.1"
+URUN_TIPI        = "gateway"  # Ürün izolasyonu: bu değer lisans imzasına ve API isteklerine dahil edilir
 
 PYTHON32_SITE    = r"C:\Python313_32\Lib\site-packages"
 PYTHON32_EXE     = r"C:\Python313_32\python.exe"
@@ -434,8 +435,8 @@ class OfflineLisansYoneticisi:
         if self._burnin_kontrol(imza):
             return False, "Bu aktivasyon kodu daha önce kullanılmış.", "", 0
 
-        # HMAC imza doğrulama
-        mesaj = f"{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8")
+        # HMAC imza doğrulama (URUN_TIPI prefix ile ürün izolasyonu sağlanır)
+        mesaj = f"{URUN_TIPI}|{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8")
         beklenen = hmac.new(OFFLINE_SECRET_KEY, mesaj, hashlib.sha256).hexdigest()[:16].upper()
         if not hmac.compare_digest(imza, beklenen):
             return False, "Aktivasyon kodu imzası geçersiz.", "", 0
@@ -572,6 +573,7 @@ class LisansKontrolcusu(QThread):
             basari, yanit = self.ly._api_cagir("/api/kontrol", {
                 "hwid": self.ly.hwid,
                 "lisans_kodu": lisans.get("lisans_kodu", ""),
+                "urun": URUN_TIPI,  # Ürün izolasyonu: periyodik kontrol isteğine ürün tipi eklendi
             })
 
             if not basari:
@@ -704,12 +706,14 @@ class LisansYoneticisi:
         basari, yanit = self._api_cagir("/api/aktive-et", {
             "hwid": self.hwid,
             "lisans_kodu": lisans_kodu.strip().upper(),
+            "urun": URUN_TIPI,  # Ürün izolasyonu: hangi ürün için aktivasyon yapıldığını bildirir
         })
 
         if basari and yanit.get("basarili"):
             self._lisans_kaydet({
                 "lisans_kodu": lisans_kodu.strip().upper(),
                 "hwid": self.hwid,
+                "urun": URUN_TIPI,  # Ürün tipi lisans dosyasına kaydedilir
                 "tur": yanit.get("tur", "bilinmiyor"),
                 "bitis_tarihi": yanit.get("bitis_tarihi") or "",
                 "son_kontrol": datetime.datetime.now().isoformat(),
@@ -728,6 +732,11 @@ class LisansYoneticisi:
 
         if not lisans:
             return "aktivasyon"
+
+        # Ürün izolasyonu: lisans başka bir ürüne aitse reddet
+        if lisans.get("urun") and lisans.get("urun") != URUN_TIPI:
+            self._lisans_sil()
+            return f"hata:Bu lisans '{lisans.get('urun')}' ürününe aittir, '{URUN_TIPI}' için kullanilamaz."
 
         if lisans.get("hwid") != self.hwid:
             self._lisans_sil()
@@ -762,6 +771,7 @@ class LisansYoneticisi:
         basari, yanit = self._api_cagir("/api/kontrol", {
             "hwid": self.hwid,
             "lisans_kodu": lisans.get("lisans_kodu", ""),
+            "urun": URUN_TIPI,  # Ürün izolasyonu: kontrol isteğine ürün tipi eklendi
         })
 
         if not basari:
