@@ -52,7 +52,7 @@ Name: "{group}\Kurulumu Kaldır"; Filename: "{uninstallexe}"
 
 [Run]
 ; 1. Çevrimdışı Pip Kütüphane Kurulumu
-Filename: "C:\Python313_32\python.exe"; Parameters: "-m pip install --no-index --find-links=""{tmp}\wheels"" OpenOPC-Python3x asyncua pywin32 pyro4"; Components: libs; StatusMsg: "Endüstriyel iletişim kütüphaneleri yükleniyor..."; Flags: waituntilterminated
+Filename: "C:\Python313_32\python.exe"; Parameters: "-m pip install --no-index --find-links=""{tmp}\wheels"" OpenOPC-Python3x asyncua pywin32 pyro4"; Componesnts: libs; StatusMsg: "Endüstriyel iletişim kütüphaneleri yükleniyor..."; Flags: waituntilterminated
 
 ; 2. PyWin32 Post Install (Windows OPC DLL Kaydı)
 Filename: "C:\Python313_32\python.exe"; Parameters: "C:\Python313_32\Scripts\pywin32_postinstall.py -install"; Components: libs; StatusMsg: "Windows OPC bileşenleri kaydediliyor..."; Flags: waituntilterminated
