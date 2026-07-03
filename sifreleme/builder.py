@@ -89,17 +89,34 @@ if __name__ == "__main__":
         manifest_path = os.path.join(current_dir, "app.manifest")
 
         hidden_imports = [
+            # --- OpenOPC / Win32 ---
             "--hidden-import=OpenOPC",
             "--hidden-import=pywin32",
-            "--hidden-import=cryptography",
-            "--hidden-import=asyncio",
+            "--hidden-import=pythoncom",
+            "--hidden-import=pywintypes",
+            # --- PyQt5 (eksiksiz) ---
             "--hidden-import=PyQt5",
             "--hidden-import=PyQt5.QtCore",
             "--hidden-import=PyQt5.QtGui",
             "--hidden-import=PyQt5.QtWidgets",
+            "--hidden-import=PyQt5.QtNetwork",
+            "--hidden-import=PyQt5.QtOpenGL",
+            "--hidden-import=PyQt5.sip",
+            # --- OPC-UA ---
             "--hidden-import=asyncua",
-            "--hidden-import=pythoncom",
-            "--hidden-import=pywintypes",
+            "--hidden-import=asyncua.client",
+            "--hidden-import=asyncua.server",
+            "--hidden-import=asyncua.common",
+            # --- Kriptografi (eksiksiz) ---
+            "--hidden-import=cryptography",
+            "--hidden-import=cryptography.fernet",
+            "--hidden-import=cryptography.hazmat",
+            "--hidden-import=cryptography.hazmat.primitives",
+            "--hidden-import=cryptography.hazmat.primitives.ciphers",
+            "--hidden-import=cryptography.hazmat.backends",
+            "--hidden-import=cryptography.hazmat.backends.openssl",
+            # --- Standart kütüphane ---
+            "--hidden-import=asyncio",
             "--hidden-import=urllib.request",
             "--hidden-import=urllib.error",
         ]
