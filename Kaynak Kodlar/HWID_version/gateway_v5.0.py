@@ -36,7 +36,7 @@ if __name__ == '__main__':
 # =====================================================================
 SUNUCU_URL       = "https://web-production-b5bbc.up.railway.app"
 UYGULAMA_SIFRESI = "admin1234"
-LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "lisans.json")
+LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "gateway_lisans.json")
 CHECKIN_ARALIK   = 7
 VERSIYON         = "4.1"
 URUN_TIPI        = "gateway"  # Ürün izolasyonu: bu değer lisans imzasına ve API isteklerine dahil edilir
@@ -225,9 +225,9 @@ _SK_P2 = bytes([0x46, 0x46, 0x4c, 0x49, 0x4e, 0x45, 0x5f, 0x4b])
 _SK_P3 = hashlib.sha256(b"opcgw_offline_2026_salt_v1").digest()[:16]
 OFFLINE_SECRET_KEY = _SK_P1 + _SK_P2 + _SK_P3
 
-OFFLINE_LISANS_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "offline_lisans.dat")
-OFFLINE_BURNIN_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "burnin.dat")
-OFFLINE_REG_PATH      = r"Software\OPCGateway\OfflineLicense"
+OFFLINE_LISANS_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "gateway_offline_lisans.dat")
+OFFLINE_BURNIN_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "gateway_burnin.dat")
+OFFLINE_REG_PATH      = r"Software\OPCGateway\GatewayOfflineLicense"  # Viewer'dan ayrı
 OFFLINE_MAX_GUN       = 365
 
 

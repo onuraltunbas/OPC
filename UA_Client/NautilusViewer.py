@@ -1125,6 +1125,73 @@ class ClientApp(QtWidgets.QMainWindow):
             self.worker.wait(3000)
         event.accept()
 
+# =====================================================================
+# BÖLÜM 4: UYGULAMA GİRİŞİ (Hibrit: Online önce, yoksa Offline)
+# =====================================================================
+
+def internet_var_mi() -> bool:
+    """Sunucuya kısa bir istek atar; başarılıysa True döner."""
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+        urllib.request.urlopen(SUNUCU_URL, context=ctx, timeout=4)
+        return True
+    except Exception:
+        return False
+
+
+def _offline_akis(app):
+    """İnternet yoksa offline lisans akışını yönetir."""
+    oly = OfflineLisansYoneticisi()
+
+    # Splash
+    splash = QtWidgets.QDialog()
+    splash.setWindowTitle("OPC UA Viewer - Lisans Kontrolu")
+    splash.setFixedSize(340, 80)
+    splash.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+    lbl_s = QtWidgets.QLabel("Çevrimdışı lisans kontrol ediliyor...", splash)
+    lbl_s.setAlignment(Qt.AlignCenter)
+    lbl_s.setGeometry(0, 0, 340, 80)
+    splash.show()
+    app.processEvents()
+
+    durum, yetki = oly.dogrula()
+    splash.hide()
+
+    if durum == "saat_geri":
+        QMessageBox.warning(
+            None, "Güvenlik Uyarısı - Sistem Saati",
+            "Güvenlik İhlali: Sistem saati geriye alınmış veya hatalı!\n\n"
+            "Lütfen bilgisayarınızın saatini güncelleyip\n"
+            "(internetten eşitleyip) programı tekrar başlatın.\n\n"
+            "Kalan lisans süreniz güvendedir."
+        )
+        sys.exit(0)
+
+    elif durum == "aktivasyon":
+        aktiv = OfflineAktivasyonPenceresi(oly)
+        aktiv.setStyleSheet(GLOBAL_STYLESHEET)
+        if aktiv.exec_() != QDialog.Accepted:
+            sys.exit(0)
+        # Aktivasyon sonrası tekrar doğrula
+        durum, yetki = oly.dogrula()
+        if durum != "gecerli":
+            QMessageBox.critical(None, "Lisans Hatası",
+                                 durum.replace("hata:", ""))
+            sys.exit(1)
+
+    elif durum.startswith("hata:"):
+        QMessageBox.critical(None, "Lisans Hatası",
+                             durum.replace("hata:", ""))
+        sys.exit(1)
+
+    # Offline modda sadece görüntüleyici aç
+    pencere = ClientApp()
+    pencere.show()
+    sys.exit(app.exec_())
+
+
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
@@ -1133,54 +1200,57 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     app.setStyleSheet(GLOBAL_STYLESHEET)
 
-    # ── Lisans Kapısı ─────────────────────────────────────────────────
-    # 1) Online lisansı dene
-    ly  = LisansYoneticisi()
-    oly = OfflineLisansYoneticisi()
+    # ── İnternet kontrolü (Hibrit Başlatma Akışı) ──────────────────────
+    splash = QtWidgets.QDialog()
+    splash.setWindowTitle("OPC UA Viewer - Baslatiliyor")
+    splash.setFixedSize(300, 80)
+    splash.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+    lbl = QtWidgets.QLabel("Baglanti kontrol ediliyor...", splash)
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setGeometry(0, 0, 300, 80)
+    splash.show()
+    app.processEvents()
 
-    durum_online = ly.dogrula()
+    bagli = internet_var_mi()
+    splash.hide()
 
-    if durum_online == "gecerli":
-        pass  # Online lisans geçerli, devam et
-    elif durum_online == "aktivasyon":
-        # Online lisans yok → offline dene
-        durum_offline, _ = oly.dogrula()
-        if durum_offline == "gecerli":
-            pass  # Offline lisans geçerli
-        elif durum_offline == "saat_geri":
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                None, "Saat Hilesi Tespit Edildi",
-                "Sistem saatinin geriye alındığı tespit edildi.\n"
-                "Lütfen sistem saatini doğrulayın ve tekrar çalıştırın.",
-            )
+    if not bagli:
+        # ══ OFFLİNE AKIŞ ══ (OfflineLisansYoneticisi devreye girer)
+        _offline_akis(app)
+        # _offline_akis içinde sys.exit çağrılır; buraya düşmez
+
+    # ══ ONLINE AKIŞ ══ (LisansYoneticisi devreye girer)
+    ly = LisansYoneticisi()
+
+    splash_dlg = QtWidgets.QDialog()
+    splash_dlg.setWindowTitle("OPC UA Viewer - Lisans Kontrolu")
+    splash_dlg.setFixedSize(300, 80)
+    splash_dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+    splash_lbl = QtWidgets.QLabel("Lisans kontrol ediliyor...", splash_dlg)
+    splash_lbl.setAlignment(Qt.AlignCenter)
+    splash_lbl.setGeometry(0, 0, 300, 80)
+    splash_dlg.show()
+    app.processEvents()
+
+    sonuc = ly.dogrula()
+    splash_dlg.hide()
+
+    if sonuc == "aktivasyon":
+        aktiv_pencere = AktivasyonPenceresi(ly)
+        aktiv_pencere.setStyleSheet(GLOBAL_STYLESHEET)
+        if aktiv_pencere.exec_() != QDialog.Accepted:
+            sys.exit(0)
+        sonuc = ly.dogrula()
+        if sonuc != "gecerli":
+            QMessageBox.critical(None, "Lisans Hatasi",
+                                 sonuc.replace("hata:", ""))
             sys.exit(1)
-        elif durum_offline == "aktivasyon":
-            # Önce online aktivasyon penceresi aç
-            pnc = AktivasyonPenceresi(ly)
-            pnc.setStyleSheet(GLOBAL_STYLESHEET)
-            ret = pnc.exec_()
-            if ret != QDialog.Accepted:
-                # Online başarısız → offline aktivasyon dene
-                pnc_off = OfflineAktivasyonPenceresi(oly)
-                pnc_off.setStyleSheet(GLOBAL_STYLESHEET)
-                ret2 = pnc_off.exec_()
-                if ret2 != QDialog.Accepted:
-                    sys.exit(0)
-        else:
-            # hata:... mesajı
-            from PyQt5.QtWidgets import QMessageBox
-            mesaj = durum_offline.replace("hata:", "", 1) if durum_offline.startswith("hata:") else durum_offline
-            QMessageBox.critical(None, "Lisans Hatası", mesaj)
-            sys.exit(1)
-    else:
-        # Online hata
-        from PyQt5.QtWidgets import QMessageBox
-        mesaj = durum_online.replace("hata:", "", 1) if durum_online.startswith("hata:") else durum_online
-        QMessageBox.critical(None, "Lisans Hatası", mesaj)
+
+    elif sonuc.startswith("hata:"):
+        QMessageBox.critical(None, "Lisans Hatasi",
+                             sonuc.replace("hata:", ""))
         sys.exit(1)
-    # ──────────────────────────────────────────────────────────────────
 
     pencere = ClientApp()
     pencere.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec_())
