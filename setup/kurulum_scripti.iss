@@ -10,6 +10,7 @@ SetupIconFile=logo.ico
 UninstallDisplayIcon={app}\OPC_Gateway_Pro.exe
 Compression=lzma2/ultra64
 SolidCompression=yes
+LZMAUseSeparateProcess=yes
 OutputDir=Output
 OutputBaseFilename=Nautilus_Gateway_v5_Setup
 RestartIfNeededByRun=yes
@@ -61,4 +62,4 @@ Filename: "C:\Python313_32\python.exe"; Parameters: "C:\Python313_32\Scripts\pyw
 Filename: "{app}\OPC_Gateway_Pro.exe"; Description: "Nautilus OPC Gateway'i Başlat"; Components: gateway; Flags: nowait postinstall skipifsilent
 
 ; 4. Kurulum bitince Viewer'ı başlatma seçeneği
-Filename: "{app}\OPC_Viewer_Pro.exe"; Description: "Nautilus OPC Viewer'ı Başlat"; Components: viewer; Flags: nowait postinstall skipifsilent
+Filename: "{app}\OPC_Viewer_Pro.exe"; Description: "Nautilus OPC Viewer'ı Başlat"; Components: viewer; Flags: nowait postinstall skipifsilent
