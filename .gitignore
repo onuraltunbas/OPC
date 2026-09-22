@@ -1,0 +1,18 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller temporary build artifacts
+sifreleme/build/
+sifreleme/dist/
+sifreleme/temp_loader.py
+*.spec
+
+# Inno Setup compiled installer outputs
+setup/Output/
+
+# Virtual Environment
+.venv/
+env/
+venv/
