@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 
 # PyInstaller temporary build artifacts
+build/
+dist/
 sifreleme/build/
 sifreleme/dist/
 sifreleme/temp_loader.py
