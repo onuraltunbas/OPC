@@ -18,9 +18,14 @@ def custom_encode(data: bytes) -> str:
 # Format: { "EXE_Adı": "kaynak_dosya.py" }
 # ---------------------------------------------------------------
 hedef_uygulamalar = {
-    "OPC_Gateway_Pro": "gateway_v5.0.py",
-    "OPC_Viewer_Pro":  "NautilusViewer.py",
-}
+        # 1. Normal Lisanslı Sürümler
+        "OPC_Gateway_Pro":      "gateway_v5.0.py",
+        "OPC_Viewer_Pro":       "NautilusViewer.py",
+
+        # 2. Unlocked / Lisanssız Sürümler
+        "OPC_Gateway_Unlocked": "gateway_v5.0_unlocked.py",
+        "OPC_Viewer_Unlocked":  "NautilusViewer.py",  # Viewer zaten Gateway'e bağlandığı için aynı kalabilir
+    }
 
 def build_simple_fortress():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -136,6 +141,16 @@ if __name__ == "__main__":
         if os.path.exists(temp_loader_path):
             os.remove(temp_loader_path)
             print(f"[*] temp_loader.py silindi.")
+
+        # setup/dist klasörüne otomatik kopyala
+        setup_dist = os.path.join(current_dir, '..', 'setup', 'dist')
+        os.makedirs(setup_dist, exist_ok=True)
+        src_exe = os.path.join(current_dir, 'dist', f"{output_name}.exe")
+        dst_exe = os.path.join(setup_dist, f"{output_name}.exe")
+        if os.path.exists(src_exe):
+            import shutil
+            shutil.copy2(src_exe, dst_exe)
+            print(f"[+] {output_name}.exe -> setup/dist/ klasörüne kopyalandı.")
 
         print(f"\n[+] BİTTİ! sifreleme/dist/{output_name}.exe hazır.")
 

@@ -1049,6 +1049,7 @@ class Ui_MainWindow(object):
         grp_alt.setStyleSheet("border: none; background: transparent;")
         lay_alt = QtWidgets.QHBoxLayout(grp_alt)
         self.btn_kurulum_ac = QtWidgets.QPushButton("Sistem Kurulum Merkezi")
+        self.btn_kurulum_ac.hide()
         self.btn_kurulum_ac.setStyleSheet("""
             QPushButton {
                 background-color: #5b8cff; color: white; font-weight: bold; padding: 8px; border-radius: 6px; border: none;
@@ -1831,6 +1832,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self._log_koprusu = LogKoprusu(self.txt_konsol)
 
         self.btn_kurulum_ac.clicked.connect(self._kurulum_ac)
+        self.btn_kurulum_ac.hide()
         self.btn_sunucu_tara.clicked.connect(self._sunucu_tara)
         self.btn_etiket_tara.clicked.connect(self._etiket_tara)
         self.btn_baslat.clicked.connect(self._baslat)

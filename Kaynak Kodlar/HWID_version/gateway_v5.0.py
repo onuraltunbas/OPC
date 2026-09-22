@@ -1982,6 +1982,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self._log_koprusu = LogKoprusu(self.txt_konsol)
 
         self.btn_kurulum_ac.clicked.connect(self._kurulum_ac)
+        self.btn_kurulum_ac.hide()
         self.btn_sunucu_tara.clicked.connect(self._sunucu_tara)
         self.btn_etiket_tara.clicked.connect(self._etiket_tara)
         self.btn_baslat.clicked.connect(self._baslat)

@@ -1,17 +1,17 @@
 [Setup]
-    AppName=Nautilus OPC Suite Pro
+    AppName=Nautilus OPC Suite Pro UNLOCKED
     AppVersion=5.0
     AppPublisher=Nautilus Technology
     AppCopyright=Copyright (C) 2026 Nautilus Technology
     DefaultDirName={autopf}\Nautilus Technology\OPC Gateway
     DefaultGroupName=Nautilus Technology
     SetupIconFile=logo.ico
-    UninstallDisplayIcon={app}\OPC_Gateway_Pro.exe
+    UninstallDisplayIcon={app}\OPC_Gateway_Unlocked.exe
     Compression=lzma2/ultra64
     SolidCompression=yes
     LZMAUseSeparateProcess=yes
     OutputDir=Output
-    OutputBaseFilename=Nautilus_Gateway_v5_Setup
+    OutputBaseFilename=Nautilus_Gateway_v5_Unlocked_Setup
     RestartIfNeededByRun=yes
 
     ; Görseller ve Lisans
@@ -33,15 +33,15 @@
     Source: "offline_kurulumlar\wheels\*"; DestDir: "{tmp}\wheels"; Flags: ignoreversion recursesubdirs createallsubdirs deleteafterinstall
 
     ; --- 2. ANA UYGULAMA DOSYALARI ---
-    Source: "dist\OPC_Gateway_Pro.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: gateway
-    Source: "dist\OPC_Viewer_Pro.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: viewer
+    Source: "dist\OPC_Gateway_Unlocked.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: gateway
+    Source: "dist\OPC_Viewer_Unlocked.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: viewer
     Source: "logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
     [Icons]
-    Name: "{group}\Nautilus OPC Gateway"; Filename: "{app}\OPC_Gateway_Pro.exe"; IconFilename: "{app}\logo.ico"; Components: gateway
-    Name: "{autodesktop}\Nautilus OPC Gateway"; Filename: "{app}\OPC_Gateway_Pro.exe"; Tasks: desktopicon; IconFilename: "{app}\logo.ico"; Components: gateway
-    Name: "{group}\Nautilus OPC Viewer"; Filename: "{app}\OPC_Viewer_Pro.exe"; IconFilename: "{app}\logo.ico"; Components: viewer
-    Name: "{autodesktop}\Nautilus OPC Viewer"; Filename: "{app}\OPC_Viewer_Pro.exe"; Tasks: desktopicon; IconFilename: "{app}\logo.ico"; Components: viewer
+    Name: "{group}\Nautilus OPC Gateway"; Filename: "{app}\OPC_Gateway_Unlocked.exe"; IconFilename: "{app}\logo.ico"; Components: gateway
+    Name: "{autodesktop}\Nautilus OPC Gateway"; Filename: "{app}\OPC_Gateway_Unlocked.exe"; Tasks: desktopicon; IconFilename: "{app}\logo.ico"; Components: gateway
+    Name: "{group}\Nautilus OPC Viewer"; Filename: "{app}\OPC_Viewer_Unlocked.exe"; IconFilename: "{app}\logo.ico"; Components: viewer
+    Name: "{autodesktop}\Nautilus OPC Viewer"; Filename: "{app}\OPC_Viewer_Unlocked.exe"; Tasks: desktopicon; IconFilename: "{app}\logo.ico"; Components: viewer
     Name: "{group}\Kurulumu Kaldır"; Filename: "{uninstallexe}"
 
     [Run]
@@ -56,8 +56,8 @@
     Filename: "C:\Python313_32\python.exe"; Parameters: "C:\Python313_32\Scripts\pywin32_postinstall.py -install"; StatusMsg: "Windows OPC COM sürücüleri kaydediliyor..."; Flags: waituntilterminated
 
     ; --- ADIM D: Kurulum Sonu Başlatma Seçenekleri ---
-    Filename: "{app}\OPC_Gateway_Pro.exe"; Description: "Nautilus OPC Gateway'i Başlat"; Components: gateway; Flags: nowait postinstall skipifsilent
-    Filename: "{app}\OPC_Viewer_Pro.exe"; Description: "Nautilus OPC Viewer'ı Başlat"; Components: viewer; Flags: nowait postinstall skipifsilent
+    Filename: "{app}\OPC_Gateway_Unlocked.exe"; Description: "Nautilus OPC Gateway'i Başlat"; Components: gateway; Flags: nowait postinstall skipifsilent
+    Filename: "{app}\OPC_Viewer_Unlocked.exe"; Description: "Nautilus OPC Viewer'ı Başlat"; Components: viewer; Flags: nowait postinstall skipifsilent
 
     [Code]
     // Bilgisayarda Python 32-bit zaten var mı kontrolü
