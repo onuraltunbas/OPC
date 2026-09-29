@@ -3,7 +3,13 @@ import sys
 import base64
 import subprocess
 import marshal
+import shutil
 from cryptography.fernet import Fernet
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    pass
 
 
 CUSTOM_ALPHABET = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ汉字龙书Ω∑∞∫≈≠≤≥★♦♣♠♥♩♪♫♬♔♕♖♗♘♙♚♛♜♝♞"
@@ -15,28 +21,50 @@ def custom_encode(data: bytes) -> str:
 
 # ---------------------------------------------------------------
 # Derlenecek hedef uygulamalar listesi
-# Format: { "EXE_Adı": "kaynak_dosya.py" }
+# Format: { "EXE_Adı": { "yol": "...", "console": bool } }
 # ---------------------------------------------------------------
 hedef_uygulamalar = {
-        # 1. Normal Lisanslı Sürümler
-        "OPC_Gateway_Pro":      "gateway_v5.0.py",
-        "OPC_Viewer_Pro":       "NautilusViewer.py",
+    # 1. Normal Lisanslı Sürümler
+    "OPC_Gateway_Pro": {
+        "yol": os.path.join('..', 'Kaynak Kodlar', 'HWID_version', 'gateway_v5.0.py'),
+        "console": False
+    },
+    "OPC_Viewer_Pro": {
+        "yol": os.path.join('..', 'Kaynak Kodlar', 'HWID_version', 'NautilusViewer.py'),
+        "console": False
+    },
 
-        # 2. Unlocked / Lisanssız Sürümler
-        "OPC_Gateway_Unlocked": "gateway_v5.0_unlocked.py",
-        "OPC_Viewer_Unlocked":  "NautilusViewer_unlocked.py",  # TÜBİTAK 2209-B tam lisanssız arayüz
-    }
+    # 2. Unlocked / Lisanssız Sürümler
+    "OPC_Gateway_Unlocked": {
+        "yol": os.path.join('..', 'Kaynak Kodlar', 'HWID_version', 'gateway_v5.0_unlocked.py'),
+        "console": False
+    },
+    "OPC_Viewer_Unlocked": {
+        "yol": os.path.join('..', 'Kaynak Kodlar', 'HWID_version', 'NautilusViewer_unlocked.py'),
+        "console": False
+    },
+
+    # 3. Altyapı Yönetim Araçları (Şifreli Konsol Araçları)
+    "Altyapi_Kurulumu": {
+        "yol": os.path.join('..', 'Gereksinimler', 'altyapi_kurulumu.py'),
+        "console": True
+    },
+    "Altyapi_Kaldir": {
+        "yol": os.path.join('..', 'Gereksinimler', 'altyapi_kaldir.py'),
+        "console": True
+    },
+}
 
 def build_simple_fortress():
     current_dir = os.path.dirname(os.path.abspath(__file__))
 
-    for output_name, py_filename in hedef_uygulamalar.items():
+    for output_name, config in hedef_uygulamalar.items():
+        target_py = os.path.normpath(os.path.join(current_dir, config["yol"]))
+        is_console = config.get("console", False)
 
-        target_py = os.path.join(current_dir, '..', 'Kaynak Kodlar', 'HWID_version', py_filename)
-
-        print(f"\n{'='*60}")
-        print(f"[*] Hedef : {py_filename}  →  {output_name}.exe")
-        print(f"{'='*60}")
+        print(f"\n{'='*65}")
+        print(f"[*] Hedef : {os.path.basename(target_py)}  ->  {output_name}.exe (Console={is_console})")
+        print(f"{'='*65}")
 
         if not os.path.exists(target_py):
             print(f"[-] Hata: {target_py} bulunamadı! Bu hedef atlanıyor...")
@@ -46,11 +74,11 @@ def build_simple_fortress():
         with open(target_py, 'rb') as f:
             original_code = f.read()
 
-        # --- ŞİFRELEME BLOĞU (değiştirilmedi) ---
+        # --- ŞİFRELEME BLOĞU (Fernet AES-128-CBC + Custom Symbol Encoding) ---
         key = Fernet.generate_key()
-        compiled_code = marshal.dumps(compile(original_code, py_filename, 'exec'))
+        compiled_code = marshal.dumps(compile(original_code, os.path.basename(target_py), 'exec'))
         encrypted_payload = custom_encode(Fernet(key).encrypt(compiled_code))
-        # ------------------------------------------
+        # ---------------------------------------------------------------------
 
         loader_code = f"""
 import ctypes, sys, time, base64, marshal
@@ -126,8 +154,10 @@ if __name__ == "__main__":
             "--hidden-import=urllib.error",
         ]
 
+        console_flag = "--console" if is_console else "--noconsole"
+
         pyinstaller_cmd = [
-            "pyinstaller", "--onefile", "--noconsole",
+            "pyinstaller", "--onefile", console_flag,
             "--noupx", "--name=" + output_name,
             f"--icon={logo_path}",
             f"--version-file={ver_path}",
@@ -148,15 +178,23 @@ if __name__ == "__main__":
         src_exe = os.path.join(current_dir, 'dist', f"{output_name}.exe")
         dst_exe = os.path.join(setup_dist, f"{output_name}.exe")
         if os.path.exists(src_exe):
-            import shutil
             shutil.copy2(src_exe, dst_exe)
             print(f"[+] {output_name}.exe -> setup/dist/ klasörüne kopyalandı.")
 
-        print(f"\n[+] BİTTİ! sifreleme/dist/{output_name}.exe hazır.")
+        # Eğer Altyapı aracı ise Gereksinimler klasörüne de kopyala
+        if output_name in ("Altyapi_Kurulumu", "Altyapi_Kaldir"):
+            gereksinimler_dir = os.path.join(current_dir, '..', 'Gereksinimler')
+            os.makedirs(gereksinimler_dir, exist_ok=True)
+            dst_ger = os.path.join(gereksinimler_dir, f"{output_name}.exe")
+            if os.path.exists(src_exe):
+                shutil.copy2(src_exe, dst_ger)
+                print(f"[+] {output_name}.exe -> Gereksinimler/ klasörüne kopyalandı.")
 
-    print("\n" + "="*60)
-    print("[+] TÜM DERLEMELER TAMAMLANDI!")
-    print("="*60)
+        print(f"[+] BİTTİ! sifreleme/dist/{output_name}.exe hazır.")
+
+    print("\n" + "="*65)
+    print("[TAMAMLANDI] TÜM ŞİFRELİ EXE'LER BAŞARIYLA DERLENDİ!")
+    print("="*65)
 
 if __name__ == "__main__":
     build_simple_fortress()
