@@ -24,7 +24,7 @@ hedef_uygulamalar = {
 
         # 2. Unlocked / Lisanssız Sürümler
         "OPC_Gateway_Unlocked": "gateway_v5.0_unlocked.py",
-        "OPC_Viewer_Unlocked":  "NautilusViewer.py",  # Viewer zaten Gateway'e bağlandığı için aynı kalabilir
+        "OPC_Viewer_Unlocked":  "NautilusViewer_unlocked.py",  # TÜBİTAK 2209-B tam lisanssız arayüz
     }
 
 def build_simple_fortress():

@@ -2085,7 +2085,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             self.cb_sunucu.addItems(sunucular)
             self._log(f"{len(sunucular)} sunucu bulundu.")
         except ImportError:
-            self._log("OpenOPC kurulu degil -- Kurulum Merkezi'ni acin.")
+            self._log("Endüstriyel altyapı eksik! Lütfen 'Gereksinimler\\Altyapi_Kurulumu.bat' dosyasını çalıştırın.")
         except Exception as e:
             self._log(f"Sunucu tarama hatasi: {e}")
 

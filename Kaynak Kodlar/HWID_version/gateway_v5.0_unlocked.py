@@ -1857,36 +1857,12 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         if self._offline_yetki:
             self._log(f"[OFFLİNE MOD] Yetki seviyesi: {self._offline_yetki}")
         self._log("   Adimlar: Sunucu Tara -> Etiket Tara -> Sec -> Baslat\n")
-        baslik = f"OPC DA -> OPC UA Gateway v{VERSIYON}"
-        if self._offline_yetki == "DEMO":
-            baslik += "   [ ⚠️ DEMO SÜRÜM - TİCARİ KULLANILAMAZ ]"
-            self._log("!!! DİKKAT: DEMO SÜRÜM KULLANIYORSUNUZ !!!")
-        elif self._offline_yetki == "READ":
-            baslik += "   [ 👁️ SADECE İZLEME (READ-ONLY) MODU ]"
-            self._log("!!! DİKKAT: YAZMA YETKİSİ KAPALI !!!")
+        baslik = f"TÜBİTAK 2209-B Endüstriyel OPC DA -> OPC UA Gateway [UNLOCKED / TAM YETKİ]"
         self.setWindowTitle(baslik)
 
     def _lisans_bilgisi_goster(self):
-        # Offline modda self.ly = None; offline lisans bilgisini göster
-        if self.ly is None:
-            try:
-                oly = OfflineLisansYoneticisi()
-                bilgi = oly.lisans_bilgisi()
-                if bilgi:
-                    bitis_ts = bilgi.get("bitis_ts", 0)
-                    yetki    = bilgi.get("yetki", self._offline_yetki)
-                    if bitis_ts > 0:
-                        bitis_dt = datetime.datetime.fromtimestamp(bitis_ts)
-                        kalan = max(0, int((bitis_ts - time.time()) / 86400))
-                        self.lbl_lisans.setText(
-                            f"[OFFLİNE] Yetki: {yetki} | "
-                            f"Bitis: {bitis_dt.strftime('%d.%m.%Y')} ({kalan} gun kaldi)"
-                        )
-                    else:
-                        self.lbl_lisans.setText(f"[OFFLİNE] Yetki: {yetki}")
-            except Exception:
-                self.lbl_lisans.setText(f"[OFFLİNE] Yetki: {self._offline_yetki}")
-            return
+        self.lbl_lisans.setText("[UNLOCKED] Tam Yetkili Sürüm (Süresiz)")
+        return
 
         # Online mod
         bilgi = self.ly.lisans_bilgisi()
@@ -1935,7 +1911,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             self.cb_sunucu.addItems(sunucular)
             self._log(f"{len(sunucular)} sunucu bulundu.")
         except ImportError:
-            self._log("OpenOPC kurulu degil -- Kurulum Merkezi'ni acin.")
+            self._log("Endüstriyel altyapı eksik! Lütfen 'Gereksinimler\\Altyapi_Kurulumu.bat' dosyasını çalıştırın.")
         except Exception as e:
             self._log(f"Sunucu tarama hatasi: {e}")
 
@@ -2202,61 +2178,9 @@ def uygulamayi_baslat():
     app.setStyle("Fusion")
     app.setStyleSheet(GLOBAL_STYLESHEET)
 
-    # ── İnternet kontrolü ──
-    splash = QtWidgets.QDialog()
-    splash.setWindowTitle("OPC Gateway - Baslaniyor")
-    splash.setFixedSize(300, 80)
-    splash.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-    lbl = QtWidgets.QLabel("Baglanti kontrol ediliyor...", splash)
-    lbl.setAlignment(Qt.AlignCenter)
-    lbl.setGeometry(0, 0, 300, 80)
-    splash.show()
-    app.processEvents()
-
-    bagli = internet_var_mi()
-    splash.hide()
-
-    if not bagli:
-        # ══ OFFLİNE AKIŞ ══
-        _offline_akis(app)
-        return  # sys.exit içinde zaten biter
-
-    # ══ ONLINE AKIŞ (mevcut kod — tek karakter bile değişmedi) ══
-    ly = LisansYoneticisi()
-
-    splash_dlg = QtWidgets.QDialog()
-    splash_dlg.setWindowTitle("OPC Gateway - Lisans Kontrolu")
-    splash_dlg.setFixedSize(300, 80)
-    splash_dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-    splash_lbl = QtWidgets.QLabel("Lisans kontrol ediliyor...", splash_dlg)
-    splash_lbl.setAlignment(Qt.AlignCenter)
-    splash_lbl.setGeometry(0, 0, 300, 80)
-    splash_dlg.show()
-    app.processEvents()
-
-    sonuc = ly.dogrula()
-    splash_dlg.hide()
-
-    if sonuc == "aktivasyon":
-        aktiv_pencere = AktivasyonPenceresi(ly)
-        if aktiv_pencere.exec_() != QDialog.Accepted:
-            sys.exit(0)
-        sonuc = ly.dogrula()
-        if sonuc != "gecerli":
-            QMessageBox.critical(None, "Lisans Hatasi",
-                                 sonuc.replace("hata:", ""))
-            sys.exit(1)
-
-    elif sonuc.startswith("hata:"):
-        QMessageBox.critical(None, "Lisans Hatasi",
-                             sonuc.replace("hata:", ""))
-        sys.exit(1)
-
-    # Arka plan lisans kontrolcüsünü başlat
-    kontrolcu = LisansKontrolcusu(ly)
-    pencere = GatewayApp(ly, kontrolcu)
+    # Doğrudan ve sıfır gecikmeli başlatma (UNLOCKED / FULL Yetki)
+    pencere = GatewayApp(None, None, offline_yetki="FULL")
     pencere.show()
-    kontrolcu.start()
     sys.exit(app.exec_())
 
 
