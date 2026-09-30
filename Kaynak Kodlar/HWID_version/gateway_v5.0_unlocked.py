@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-OPC DA - OPC UA Gateway v4.1
-HWID + Online Aktivasyon Lisans Sistemi (Model B)
-v4.1: "detail"/"mesaj" anahtar uyumsuzlugu duzeltildi
+TÜBİTAK 2209-B Üniversite Öğrencileri Sanayiye Yönelik Araştırma Projeleri Destekleme Programı
+Proje Başlığı: Endüstriyel Miras (OPC DA) Sistemleri için Donanım Güvenlikli ve Düşük Gecikmeli
+              OPC UA Protokol Dönüştürücü Ağ Geçidi (Saha İstasyonu - Bağımsız / Unlocked Sürüm)
+
+Modül: Endüstriyel Veri Köprüsü & Saha İstasyon İstemcisi v5.0 (Doğrudan Yetkili Mod)
 """
 
 import sys
@@ -32,13 +34,13 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
 
 # =====================================================================
-# YAPILANDIRMA
+# TÜBİTAK 2209-B SAHA İSTASYONU YAPILANDIRMASI
 # =====================================================================
-SUNUCU_URL       = "https://web-production-b5bbc.up.railway.app"
+SUNUCU_URL       = os.getenv("OPC_SUNUCU_URL", "https://nautilustechnology.com.tr")
 UYGULAMA_SIFRESI = "admin1234"
 LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "lisans.json")
 CHECKIN_ARALIK   = 7
-VERSIYON         = "4.1"
+VERSIYON         = "5.0"
 
 PYTHON32_SITE    = r"C:\Python313_32\Lib\site-packages"
 PYTHON32_EXE     = r"C:\Python313_32\python.exe"

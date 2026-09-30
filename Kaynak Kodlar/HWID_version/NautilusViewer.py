@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-OPC UA Viewer (Client)
-Nautilus Technology - Kurumsal Tema Uyumlu
+TÜBİTAK 2209-B Üniversite Öğrencileri Sanayiye Yönelik Araştırma Projeleri Destekleme Programı
+Proje Başlığı: Endüstriyel Miras (OPC DA) Sistemleri için Donanım Güvenlikli ve Düşük Gecikmeli
+              OPC UA Protokol Dönüştürücü Ağ Geçidi (Saha İstasyonu)
+
+Modül: Endüstriyel OPC UA İzleme ve Telemetri İstemcisi (NautilusViewer v5.0)
+Cihaz Yetkilendirme (HWID Attestation) & Güvenlikli İletişim Mimarisi
 """
 
 import sys
@@ -26,14 +30,14 @@ from PyQt5.QtWidgets import QMessageBox, QDialog
 from asyncua import Client
 
 # =====================================================================
-# YAPILANDIRMA
+# TÜBİTAK 2209-B İSTEMCİ YAPILANDIRMASI
 # =====================================================================
-SUNUCU_URL       = "https://web-production-b5bbc.up.railway.app"
+SUNUCU_URL       = os.getenv("OPC_SUNUCU_URL", "https://nautilustechnology.com.tr")
 UYGULAMA_SIFRESI = "admin1234"
 LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "viewer_lisans.json")
 CHECKIN_ARALIK   = 7
-VERSIYON         = "1.0"
-URUN_TIPI        = "viewer"  # Ürün izolasyonu: bu değer lisans imzasına ve API isteklerine dahil edilir
+VERSIYON         = "5.0"
+URUN_TIPI        = "viewer"  # TÜBİTAK 2209-B Saha İstasyonu Yetkilendirme İzolasyonu
 
 # =====================================================================
 # BÖLÜM 0: HWID ÜRETİCİ (Online Lisans için)
@@ -421,9 +425,6 @@ class LisansYoneticisi:
         try:
             url  = f"{SUNUCU_URL.rstrip('/')}{endpoint}"
             body = json.dumps(veri).encode("utf-8")
-            ctx  = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode    = ssl.CERT_NONE
             req = urllib.request.Request(
                 url, data=body,
                 headers={
@@ -433,8 +434,16 @@ class LisansYoneticisi:
                 },
                 method="POST"
             )
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
-                return True, json.loads(r.read().decode("utf-8"))
+            try:
+                ctx = ssl.create_default_context()
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+                    return True, json.loads(r.read().decode("utf-8"))
+            except (ssl.SSLError, urllib.error.URLError):
+                ctx_fb = ssl.create_default_context()
+                ctx_fb.check_hostname = False
+                ctx_fb.verify_mode    = ssl.CERT_NONE
+                with urllib.request.urlopen(req, context=ctx_fb, timeout=10) as r:
+                    return True, json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             try:
                 hata_govde = json.loads(e.read().decode("utf-8"))
@@ -1131,14 +1140,23 @@ class ClientApp(QtWidgets.QMainWindow):
 
 def internet_var_mi() -> bool:
     """Sunucuya kısa bir istek atar; başarılıysa True döner."""
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        urllib.request.urlopen(SUNUCU_URL, context=ctx, timeout=4)
-        return True
-    except Exception:
-        return False
+    for hedef in [f"{SUNUCU_URL.rstrip('/')}/health", SUNUCU_URL]:
+        try:
+            ctx = ssl.create_default_context()
+            urllib.request.urlopen(hedef, context=ctx, timeout=4)
+            return True
+        except (ssl.SSLError, urllib.error.URLError):
+            try:
+                ctx_fb = ssl.create_default_context()
+                ctx_fb.check_hostname = False
+                ctx_fb.verify_mode    = ssl.CERT_NONE
+                urllib.request.urlopen(hedef, context=ctx_fb, timeout=4)
+                return True
+            except Exception:
+                continue
+        except Exception:
+            continue
+    return False
 
 
 def _offline_akis(app):

@@ -112,15 +112,19 @@ Sistemdeki tüm Python dosyaları, kayıt defteri girdileri, güvenlik duvarı k
 
 ## 🧪 5. Bilimsel Doğrulama ve Benchmark Testleri
 
-* **Hata Enjeksiyonu ve Otonom Kurtarma Testi:**
+* **Hata Enjeksiyonu, Dayanıklılık ve 1000 Etiket Yük Testi:**
   ```cmd
-  python opc_simulasyon_test_harness.py
+  python opc_simulasyon_test_harness.py --tags 1000 --cycles 50 --fault-rate 0.05
+  ```
+* **Ağ Geçidi Headless / Benchmark Modu:**
+  ```cmd
+  python "Kaynak Kodlar\HWID_version\gateway_v5.0.py" --benchmark
   ```
 * **Milisaniyelik Performans ve Sistem Yük Analizi:**
   ```cmd
   python benchmark_collector.py
   ```
-  Oluşan `benchmark_results.csv` ve `performans_grafigi.png` dosyaları TÜBİTAK Sonuç Raporu için yüksek çözünürlüklü veri sağlar.
+  Oluşan `benchmark_raporu.html` (etkileşimli SVG grafikli web raporu), `benchmark_metrikleri.csv` ve `benchmark_raporu.json` dosyaları TÜBİTAK Sonuç Raporu ve Jüri Sunumu için doğrudan kullanılabilir sayısal ve görsel doğrulamalar sağlar.
 
 ---
 

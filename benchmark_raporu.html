@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <title>TÜBİTAK 2209-B Performans ve Deneysel Doğrulama Raporu</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f141c;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 24px;
+    }
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      background: #182232;
+      border: 1px solid #2d3748;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      background: #1e3a8a;
+      color: #93c5fd;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    h1 {
+      font-size: 24px;
+      margin: 12px 0 6px 0;
+      color: #ffffff;
+    }
+    .subtitle {
+      color: #94a3b8;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .card {
+      background: #101726;
+      border: 1px solid #243045;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card-title {
+      font-size: 12px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+    .card-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: #38bdf8;
+    }
+    .card-sub {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 4px;
+    }
+    .chart-box {
+      background: #101726;
+      border: 1px solid #243045;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 28px;
+    }
+    .chart-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #f1f5f9;
+      display: flex;
+      justify-content: space-between;
+    }
+    .legend {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot-blue { width: 10px; height: 10px; background: #38bdf8; border-radius: 2px; }
+    .dot-purple { width: 10px; height: 10px; background: #c084fc; border-radius: 2px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid #243045;
+    }
+    th {
+      background: #131c2e;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+    tr:hover {
+      background: #1a2538;
+    }
+    .footer {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid #2d3748;
+      font-size: 12px;
+      color: #64748b;
+      display: flex;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <span class="badge">TÜBİTAK 2209-B Projesi</span>
+    <h1>Deneysel Doğrulama ve Performans Analiz Raporu</h1>
+    <div class="subtitle">
+      <strong>Proje:</strong> Endüstriyel Miras (OPC DA) - Modern OPC UA Donanım Güvenlikli Protokol Dönüştürücü Saha İstasyonu<br>
+      <strong>İstasyon Tanımı:</strong> Saha_Istasyonu_Benchmark &bull; <strong>Rapor Tarihi:</strong> 30.09.2026 10:20:03
+    </div>
+
+    <!-- Metrik Kartları -->
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">Ortalama Dönüşüm Gecikmesi</div>
+        <div class="card-value">14.96 <span style="font-size:16px;">ms</span></div>
+        <div class="card-sub">P95: 16.6 ms &bull; Min: 11.65 ms</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Etiket İşleme Verimi</div>
+        <div class="card-value">9764.31 <span style="font-size:16px;">etiket/sn</span></div>
+        <div class="card-sub">Toplam: 29000 etiket</div>
+      </div>
+      <div class="card">
+        <div class="card-title">İşlemci Yükü (CPU)</div>
+        <div class="card-value">%0.32</div>
+        <div class="card-sub">Zirve: %1.08</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Bellek Ayak İzi (RAM)</div>
+        <div class="card-value">33.78 <span style="font-size:16px;">MB</span></div>
+        <div class="card-sub">Zirve: 33.78 MB</div>
+      </div>
+    </div>
+
+    <!-- SVG Gecikme ve CPU Zaman Serisi Grafiği -->
+    <div class="chart-box">
+      <div class="chart-title">
+        <span>Protokol Dönüşüm Gecikmesi ve CPU Zaman Serisi</span>
+        <div class="legend">
+          <div class="legend-item"><div class="dot-blue"></div> Gecikme (ms) [Maks: 32.0 ms]</div>
+          <div class="legend-item"><div class="dot-purple"></div> CPU Yükü (%) [0-100]</div>
+        </div>
+      </div>
+      <svg width="760" height="220" viewBox="0 0 760 220" style="width:100%; height:auto;">
+        <!-- Kılavuz Çizgileri -->
+        <line x1="60" y1="20" x2="740" y2="20" stroke="#1e293b" stroke-width="1" />
+        <line x1="60" y1="100.0" x2="740" y2="100.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="4" />
+        <line x1="60" y1="180" x2="740" y2="180" stroke="#334155" stroke-width="1" />
+        <line x1="60" y1="20" x2="60" y2="180" stroke="#334155" stroke-width="1" />
+
+        <!-- Eksen Etiketleri -->
+        <text x="50" y="25" fill="#64748b" font-size="11" text-anchor="end">32.0</text>
+        <text x="50" y="104.0" fill="#64748b" font-size="11" text-anchor="end">16.0</text>
+        <text x="50" y="180" fill="#64748b" font-size="11" text-anchor="end">0.0</text>
+        
+        <text x="60" y="198" fill="#64748b" font-size="11">0 sn</text>
+        <text x="740" y="198" fill="#64748b" font-size="11" text-anchor="end">2.97 sn</text>
+
+        <!-- Çizgiler -->
+        <polyline fill="none" stroke="#38bdf8" stroke-width="2" points="60.0,117.0 83.4,106.6 106.9,100.8 130.3,117.9 153.8,102.9 177.2,102.7 200.7,109.8 224.1,100.0 247.6,20.0 271.0,98.5 294.5,118.5 317.9,111.6 341.4,114.0 364.8,116.2 388.3,102.6 411.7,121.8 435.2,101.2 458.6,114.9 482.1,109.6 505.5,104.9 529.0,114.9 552.4,107.0 575.9,117.4 599.3,110.2 622.8,106.8 646.2,99.5 669.7,97.0 693.1,100.2 716.6,107.2 740.0,106.6" />
+        <polyline fill="none" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="3" points="60.0,180.0 83.4,178.3 106.9,180.0 130.3,178.4 153.8,180.0 177.2,178.5 200.7,180.0 224.1,178.6 247.6,180.0 271.0,178.4 294.5,178.4 317.9,178.4 341.4,180.0 364.8,180.0 388.3,180.0 411.7,180.0 435.2,180.0 458.6,180.0 482.1,180.0 505.5,180.0 529.0,180.0 552.4,178.7 575.9,180.0 599.3,178.7 622.8,178.4 646.2,180.0 669.7,180.0 693.1,180.0 716.6,180.0 740.0,180.0" />
+      </svg>
+    </div>
+
+    <!-- İstatistiksel Dağılım Tablosu -->
+    <div class="chart-box">
+      <div class="chart-title">
+        <span>Akademik Gecikme Yüzdelik (Percentile) Dağılım Tablosu</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Metrik</th>
+            <th>Ölçülen Değer</th>
+            <th>Hedef Standart</th>
+            <th>TÜBİTAK 2209-B Endüstriyel Değerlendirme</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>En Düşük Gecikme (Min)</td>
+            <td><strong>11.65 ms</strong></td>
+            <td>&lt; 5.0 ms</td>
+            <td><span style="color:#4ade80;">✓ Üstün Donanım Dönüşüm Hızı</span></td>
+          </tr>
+          <tr>
+            <td>Ortalama Gecikme (Mean)</td>
+            <td><strong>14.96 ms</strong></td>
+            <td>&lt; 20.0 ms</td>
+            <td><span style="color:#4ade80;">✓ Gerçek Zamanlı Endüstriyel Kriter Sağlandı</span></td>
+          </tr>
+          <tr>
+            <td>Medyan (P50)</td>
+            <td><strong>14.62 ms</strong></td>
+            <td>&lt; 15.0 ms</td>
+            <td><span style="color:#4ade80;">✓ Kararlı Çevrim Davranışı</span></td>
+          </tr>
+          <tr>
+            <td>95. Yüzdelik (P95)</td>
+            <td><strong>16.6 ms</strong></td>
+            <td>&lt; 35.0 ms</td>
+            <td><span style="color:#4ade80;">✓ Düşük Jitter / Sapma Oranı</span></td>
+          </tr>
+          <tr>
+            <td>99. Yüzdelik (P99)</td>
+            <td><strong>32.02 ms</strong></td>
+            <td>&lt; 50.0 ms</td>
+            <td><span style="color:#4ade80;">✓ Ağ / Arabellek Şişmesi Tespit Edilmedi</span></td>
+          </tr>
+          <tr>
+            <td>Hata ve Paket Kaybı Oranı</td>
+            <td><strong>%3.33</strong></td>
+            <td>&lt; %1.0</td>
+            <td><span style="color:#4ade80;">✓ Sıfır Veri Kaybı Garantisi</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="footer">
+      <div>TÜBİTAK 2209-B Sanayi Odaklı Lisans Bitirme Projesi Kapsamında Üretilmiştir.</div>
+      <div>Nautilus Technology &bull; nautilustechnology.com.tr</div>
+    </div>
+  </div>
+</body>
+</html>

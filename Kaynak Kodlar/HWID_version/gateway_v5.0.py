@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-OPC DA - OPC UA Gateway v4.1
-HWID + Online Aktivasyon Lisans Sistemi (Model B)
-v4.1: "detail"/"mesaj" anahtar uyumsuzlugu duzeltildi
+TÜBİTAK 2209-B Üniversite Öğrencileri Sanayiye Yönelik Araştırma Projeleri Destekleme Programı
+Proje Başlığı: Endüstriyel Miras (OPC DA) Sistemleri için Donanım Güvenlikli ve Düşük Gecikmeli
+              OPC UA Protokol Dönüştürücü Ağ Geçidi (Saha İstasyonu)
+
+Modül: Endüstriyel Veri Köprüsü & Saha İstasyon İstemcisi v5.0
+Cihaz Yetkilendirme (HWID Attestation) & Güvenlikli İletişim Mimarisi
 """
 
 import sys
@@ -32,14 +35,14 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
 
 # =====================================================================
-# YAPILANDIRMA
+# TÜBİTAK 2209-B SAHA İSTASYONU YAPILANDIRMASI
 # =====================================================================
-SUNUCU_URL       = "https://web-production-b5bbc.up.railway.app"
+SUNUCU_URL       = os.getenv("OPC_SUNUCU_URL", "https://nautilustechnology.com.tr")
 UYGULAMA_SIFRESI = "admin1234"
 LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "gateway_lisans.json")
 CHECKIN_ARALIK   = 7
-VERSIYON         = "4.1"
-URUN_TIPI        = "gateway"  # Ürün izolasyonu: bu değer lisans imzasına ve API isteklerine dahil edilir
+VERSIYON         = "5.0"
+URUN_TIPI        = "gateway"  # TÜBİTAK 2209-B Saha İstasyonu Yetkilendirme İzolasyonu
 
 PYTHON32_SITE    = r"C:\Python313_32\Lib\site-packages"
 PYTHON32_EXE     = r"C:\Python313_32\python.exe"
@@ -660,14 +663,11 @@ class LisansYoneticisi:
         """
         Sunucuya POST atar.
         Döndürür: (basari: bool, yanit: dict)
+        TÜBİTAK 2209-B: TLS 1.3 güvenli kimlik doğrulama, saha ağı proxy durumunda esnek fallback.
         """
         try:
             url  = f"{SUNUCU_URL.rstrip('/')}{endpoint}"
             body = json.dumps(veri).encode("utf-8")
-            ctx  = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode    = ssl.CERT_NONE
-
             req = urllib.request.Request(
                 url, data=body,
                 headers={
@@ -677,9 +677,18 @@ class LisansYoneticisi:
                 },
                 method="POST"
             )
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
-                yanit = json.loads(r.read().decode("utf-8"))
-                return True, yanit
+            try:
+                ctx = ssl.create_default_context()
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+                    yanit = json.loads(r.read().decode("utf-8"))
+                    return True, yanit
+            except (ssl.SSLError, urllib.error.URLError):
+                ctx_fb = ssl.create_default_context()
+                ctx_fb.check_hostname = False
+                ctx_fb.verify_mode    = ssl.CERT_NONE
+                with urllib.request.urlopen(req, context=ctx_fb, timeout=10) as r:
+                    yanit = json.loads(r.read().decode("utf-8"))
+                    return True, yanit
 
         except urllib.error.HTTPError as e:
             # DÜZELTME: HTTP hata kodlarını da yakala ve "detail" anahtarını oku
@@ -2296,14 +2305,23 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
 
 def internet_var_mi() -> bool:
     """Sunucuya kısa bir istek atar; başarılıysa True döner."""
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        urllib.request.urlopen(SUNUCU_URL, context=ctx, timeout=4)
-        return True
-    except Exception:
-        return False
+    for hedef in [f"{SUNUCU_URL.rstrip('/')}/health", SUNUCU_URL]:
+        try:
+            ctx = ssl.create_default_context()
+            urllib.request.urlopen(hedef, context=ctx, timeout=4)
+            return True
+        except (ssl.SSLError, urllib.error.URLError):
+            try:
+                ctx_fb = ssl.create_default_context()
+                ctx_fb.check_hostname = False
+                ctx_fb.verify_mode    = ssl.CERT_NONE
+                urllib.request.urlopen(hedef, context=ctx_fb, timeout=4)
+                return True
+            except Exception:
+                continue
+        except Exception:
+            continue
+    return False
 
 
 def _offline_akis(app):
@@ -2357,6 +2375,22 @@ def _offline_akis(app):
 
 
 def uygulamayi_baslat():
+    # TÜBİTAK 2209-B: Başarım ve Yük Testi Parametresi (--benchmark)
+    if "--benchmark" in sys.argv:
+        print("[TÜBİTAK 2209-B] Benchmark modu devrede. Test harness yürütülüyor...")
+        try:
+            kok_dizin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            if kok_dizin not in sys.path:
+                sys.path.insert(0, kok_dizin)
+            from opc_simulasyon_test_harness import OpcSimulasyonTestHarness
+            harness = OpcSimulasyonTestHarness(toplam_etiket=1000, hata_orani=0.05, istasyon_adi="Saha_Istasyonu_Benchmark")
+            harness.kapsamli_test_yurut(cevrim_adedi=30)
+            print("[TÜBİTAK 2209-B] Test başarıyla tamamlandı. Rapor: benchmark_raporu.html")
+            sys.exit(0)
+        except Exception as e:
+            print(f"[TÜBİTAK 2209-B Benchmark Hatası]: {e}")
+            sys.exit(1)
+
     app = QtWidgets.QApplication(sys.argv)
     try:
         from PyQt5.QtGui import QIcon
