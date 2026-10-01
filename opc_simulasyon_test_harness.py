@@ -228,9 +228,10 @@ def main():
     )
     parser.add_argument("--tags", type=int, default=1000, help="Simüle edilecek endüstriyel etiket adedi (Varsayılan: 1000)")
     parser.add_argument("--cycles", type=int, default=50, help="Yürütülecek çevrim adedi (Varsayılan: 50)")
-    parser.add_argument("--fault-rate", type=float, default=0.05, help="Simüle edilecek arıza/ağ kopma oranı (Varsayılan: 0.05 = %5)")
+    parser.add_argument("--fault-rate", type=float, default=0.05, help="Simüle edilecek arıza/ağ kopma oranı (Varsayılan: 0.05 = %%5)")
     parser.add_argument("--interval", type=float, default=0.05, help="Çevrimler arası bekleme saniyesi (Varsayılan: 0.05 sn)")
     parser.add_argument("--report", action="store_true", default=True, help="Akademik HTML, CSV ve JSON raporlarını üretir")
+    parser.add_argument("--telemetry", action="store_true", default=False, help="Ölçüm sonuçlarını canlı VDS telemetri sunucusuna (https://nautilustechnology.com.tr) iletir")
     args = parser.parse_args()
 
     harness = OpcSimulasyonTestHarness(
@@ -263,6 +264,14 @@ def main():
     print("[OK] benchmark_raporu.html oluşturuldu -> Tarayıcıda açıp inceleyebilirsiniz.")
     print("[OK] benchmark_metrikleri.csv oluşturuldu.")
     print("[OK] benchmark_raporu.json oluşturuldu.")
+
+    if args.telemetry:
+        print("\n[VDS TELEMETRİ] Sonuçlar canlı sunucuya aktarılıyor (https://nautilustechnology.com.tr)...")
+        basari = harness.metrik_toplayici.telemetri_sunucusuna_ilet()
+        if basari:
+            print("[OK] Canlı VDS telemetri kaydı başarıyla oluşturuldu.")
+        else:
+            print("[BİLGİ] VDS telemetri sunucusuna istek gönderildi.")
 
 
 if __name__ == "__main__":

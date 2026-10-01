@@ -159,27 +159,41 @@ OPC/
 
 ---
 
-## 🚀 7. Kurulum, Test ve Doğrulama Kılavuzu
+## 🚀 7. Windows Test ve Doğrulama Senaryoları (Jüri & Danışman Sunum Rehberi)
 
-### A. Tek Parça Setup İle Kurulum (Önerilen)
-1. `setup/Output/nautilus_setup.exe` dosyasını çalıştırın.
-2. Bileşen ekranında kurmak istediğiniz modülleri seçin (Gateway / Viewer).
-3. Bitiş ekranındaki `[ ] Endüstriyel Altyapıyı Şimdi Kur` seçeneğini işaretleyerek kurulumu tek tıkla tamamlayın.
+Windows ortamında bu sistemi TÜBİTAK jürisine, akademik danışmanınıza veya sanayi temsilcilerine sunarken adım adım yürütülecek 3 temel doğrulama senaryosu aşağıda tanımlanmıştır:
 
-### B. Hata Enjeksiyonu ve 1000 Etiket Yük Testi
-Fiziksel PLC olmadan ağ geçidinin dayanıklılığını doğrulamak için:
-```cmd
-python opc_simulasyon_test_harness.py --tags 1000 --cycles 50 --fault-rate 0.05
-```
+### 🔹 Senaryo 1: Fiziksel PLC Olmadan Yük ve Hata Enjeksiyonu Testi
+Fiziksel PLC donanımı bulunmayan ortamlarda sistemin dönüştürme başarımını ve arıza dayanıklılığını kanıtlamak için:
+1. Terminalde komutu çalıştırın (1000 sanal endüstriyel sensör, 50 çevrim ve kasıtlı %5 hat kopması simülasyonu):
+   ```cmd
+   python opc_simulasyon_test_harness.py --tags 1000 --cycles 50 --fault-rate 0.05
+   ```
+2. Konsol çıktısında çevrim sürelerinin (11-18 ms) ve arıza durumunda sistemin kilitlenmeyip otonom kurtarıldığının (`[OK] Otomatik Kurtarma`) loglandığını gözlemleyin.
+3. Test tamamlandığında oluşan **`benchmark_raporu.html`** dosyasını çift tıklayarak herhangi bir internet tarayıcısında açın. Jüriye SVG gecikme histogramı, CPU/RAM tüketim eğrileri ve P95/P99 dağılım tablosunu sunun.
 
-### C. Ağ Geçidi Headless / Benchmark Modu
-Ağ geçidini grafik arayüz açmadan doğrudan test etmek için:
-```cmd
-python "Kaynak Kodlar\HWID_version\gateway_v5.0.py" --benchmark
-```
+### 🔹 Senaryo 2: Canlı Saha Ağ Geçidi ve Algoritmik Gözlem
+Ağ geçidinin gerçek çalışma modunda Auto-Tune ve Exponential Backoff algoritmalarını konsoldan canlı izlemek için:
+1. İsteğe bağlı olarak GUI üzerinden başlatabilir veya doğrudan benchmark parametresiyle çalıştırabilirsiniz:
+   ```cmd
+   python "Kaynak Kodlar\HWID_version\gateway_v5.0.py" --benchmark
+   ```
+2. Canlı çalışma sırasında:
+   * **Auto-Tune Algoritması:** PLC yanıt süresine (`read_elapsed_ms`) göre okuma penceresinin ($W_t$) dinamik olarak 6 ila 120 arasında otomatik dengelendiğini konsoldan takip edin.
+   * **Exponential Backoff:** Okunamayan veya bağlantısı kopan etiketlerin anında kuyruktan atılmayıp $1\text{s} \to 2\text{s} \to 4\text{s} \to 8\text{s}$ kademeli gecikmeyle arka planda yeniden denenmesini gözlemleyin.
+3. Eşzamanlı olarak `OPC_Viewer_Pro.exe` veya üçüncü taraf bir OPC UA Client (UaExpert) ile `opc.tcp://127.0.0.1:4840/` adresine bağlanıp dönüştürülen etiket değerlerini canlı izleyin.
 
-### D. Akademik Rapor Görüntüleme
-Üretilen `benchmark_raporu.html` dosyasını çift tıklayarak herhangi bir internet tarayıcısında açabilir, gecikme dağılım histogramını ve CPU/RAM eğrilerini inceleyebilirsiniz.
+### 🔹 Senaryo 3: Canlı Ubuntu VDS Telemetrisi ve Uzaktan Doğrulama
+Windows makinesinden internet üzerinden yerel Ubuntu VDS sunucusuna canlı telemetri basıp doğrulamak için:
+1. Test harness'ı `--telemetry` parametresiyle çalıştırarak ölçülen metriklerin doğrudan VDS sunucusuna aktarılmasını sağlayın:
+   ```cmd
+   python opc_simulasyon_test_harness.py --tags 1000 --cycles 50 --fault-rate 0.05 --telemetry
+   ```
+2. Ekranda `[OK] Canlı VDS telemetri kaydı başarıyla oluşturuldu.` mesajını teyit edin.
+3. Herhangi bir web tarayıcısından veya curl ile canlı sunucu uç noktasına giderek kaydedilen telemetri özetini doğrulayın:
+   * **Tarayıcı / API Adresi:** [https://nautilustechnology.com.tr/api/v1/telemetry/metrics](https://nautilustechnology.com.tr/api/v1/telemetry/metrics)
+   * JSON çıktısında son eklenen istasyon adı, ortalama gecikme, etiket verimi ve UTC zaman damgasını jüriye canlı olarak gösterin.
+   * Sunucu sağlık durumu için: [https://nautilustechnology.com.tr/api/health](https://nautilustechnology.com.tr/api/health)
 
 ---
 
