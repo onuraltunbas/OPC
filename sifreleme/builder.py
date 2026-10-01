@@ -148,6 +148,12 @@ if __name__ == "__main__":
             "--hidden-import=cryptography.hazmat.primitives.ciphers",
             "--hidden-import=cryptography.hazmat.backends",
             "--hidden-import=cryptography.hazmat.backends.openssl",
+            # --- Donanım Sürücüleri ---
+            "--hidden-import=drivers",
+            "--hidden-import=drivers.scanner",
+            "--hidden-import=drivers.s7_driver",
+            "--hidden-import=drivers.modbus_driver",
+            "--hidden-import=drivers.qt_compat",
             # --- Standart kütüphane ---
             "--hidden-import=asyncio",
             "--hidden-import=urllib.request",
@@ -155,6 +161,8 @@ if __name__ == "__main__":
         ]
 
         console_flag = "--console" if is_console else "--noconsole"
+        hwid_dir = os.path.normpath(os.path.join(current_dir, '..', 'Kaynak Kodlar', 'HWID_version'))
+        drivers_dir = os.path.join(hwid_dir, 'drivers')
 
         pyinstaller_cmd = [
             "pyinstaller", "--onefile", console_flag,
@@ -162,7 +170,9 @@ if __name__ == "__main__":
             f"--icon={logo_path}",
             f"--version-file={ver_path}",
             f"--manifest={manifest_path}",
+            f"--paths={hwid_dir}",
             f"--add-data={logo_path};.",
+            f"--add-data={drivers_dir};drivers",
         ] + hidden_imports + [temp_loader_path]
 
         subprocess.run(pyinstaller_cmd, shell=True, cwd=current_dir)

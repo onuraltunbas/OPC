@@ -54,9 +54,14 @@ def site_path_ekle():
 
 site_path_ekle()
 
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import QThread, pyqtSignal, QObject, Qt, QTimer
-from PyQt5.QtWidgets import QMessageBox, QDialog
+from drivers.scanner import HardwareScanner, DiscoveredDevice
+from drivers.s7_driver import S7Driver
+from drivers.modbus_driver import ModbusDriver
+from drivers.qt_compat import (
+    QtCore, QtGui, QtWidgets, Qt, QTimer,
+    pyqtSignal, pyqtSlot, QThread, QObject,
+    QMessageBox, QDialog
+)
 
 
 GLOBAL_STYLESHEET = """
@@ -1439,9 +1444,60 @@ class GatewayWorker(QThread):
         the same thread where the client was created (mitigates DCOM/COM
         threading issues that cause "poisoned" connections).
         """
-        import functools
-
         sonuclar = {}
+
+        # 1) Siemens S7 Doğrudan Donanım Okuması
+        s7 = getattr(self, "_s7_client", None)
+        if s7 is not None and s7.is_connected():
+            now_iso = datetime.datetime.now().isoformat()
+            for et in etiket_listesi:
+                val = None
+                try:
+                    parts = et.split(".")
+                    db_num = int(parts[0].replace("DB", ""))
+                    var_name = parts[1]
+                    if var_name.startswith("DBD"):
+                        offset = int(var_name.replace("DBD", ""))
+                        val = s7.read_real(db_num, offset)
+                    elif var_name.startswith("DBW"):
+                        offset = int(var_name.replace("DBW", ""))
+                        val = float(s7.read_int(db_num, offset) or 0)
+                    elif var_name.startswith("DBX"):
+                        offset = int(var_name.replace("DBX", ""))
+                        bit = int(parts[2]) if len(parts) > 2 else 0
+                        b_val = s7.read_bool(db_num, offset, bit)
+                        val = 1.0 if b_val else 0.0
+                    else:
+                        val = s7.read_real(db_num, 0)
+                except Exception:
+                    val = None
+                sonuclar[et] = (val, "Good" if val is not None else "Bad", now_iso)
+            self._last_read_stats = {"mode": "s7_direct", "timeouts": 0, "elapsed_ms": 1, "tag_count": len(etiket_listesi)}
+            return sonuclar
+
+        # 2) Modbus TCP Doğrudan Donanım Okuması
+        mb = getattr(self, "_modbus_client", None)
+        if mb is not None and mb.is_connected():
+            now_iso = datetime.datetime.now().isoformat()
+            for et in etiket_listesi:
+                val = None
+                try:
+                    if et.startswith("HR_"):
+                        reg_addr = int(et.replace("HR_", "")) - 40001
+                        val = mb.read_float32(reg_addr)
+                    elif et.startswith("Coil_"):
+                        coil_idx = int(et.replace("Coil_", "")) - 1
+                        bits = mb.read_coils(coil_idx, 1)
+                        if bits:
+                            val = 1.0 if bits[0] else 0.0
+                    else:
+                        val = mb.read_float32(0)
+                except Exception:
+                    val = None
+                sonuclar[et] = (val, "Good" if val is not None else "Bad", now_iso)
+            self._last_read_stats = {"mode": "modbus_direct", "timeouts": 0, "elapsed_ms": 1, "tag_count": len(etiket_listesi)}
+            return sonuclar
+
         loop = asyncio.get_running_loop()
         executor = getattr(self, "_opc_executor", None)
 
@@ -1700,32 +1756,59 @@ class GatewayWorker(QThread):
         async with srv:
             loop = asyncio.get_running_loop()
             self._log(f"OPC UA Sunucusu yayinda: {endpoint}")
-            # Create a dedicated single-thread executor for OpenOPC COM interactions
-            # so that the client is always accessed from the same thread.
-            from concurrent.futures import ThreadPoolExecutor
-            self._opc_executor = ThreadPoolExecutor(max_workers=1)
-            try:
-                def _create_client():
+            import re
+            is_s7 = "s7" in self.prog_id.lower() or "siemens" in self.prog_id.lower()
+            is_modbus = "modbus" in self.prog_id.lower() or "schneider" in self.prog_id.lower()
+
+            if is_s7:
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", self.prog_id)
+                s7_ip = m.group(1) if m else "127.0.0.1"
+                s7_port = int(m.group(2)) if m else 102
+                self._s7_client = S7Driver(s7_ip, s7_port)
+                if self._s7_client.connect():
+                    self._log(f"Siemens S7 Donanımına Doğrudan Bağlanıldı: {s7_ip}:{s7_port} ({self._s7_client.device_info})")
+                else:
+                    self._log(f"Siemens S7 Donanımına Bağlanılamadı: {s7_ip}:{s7_port}")
+                    return
+
+            elif is_modbus:
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", self.prog_id)
+                mb_ip = m.group(1) if m else "127.0.0.1"
+                mb_port = int(m.group(2)) if m else 502
+                self._modbus_client = ModbusDriver(mb_ip, mb_port)
+                if self._modbus_client.connect():
+                    self._log(f"Modbus TCP Donanımına Doğrudan Bağlanıldı: {mb_ip}:{mb_port} ({self._modbus_client.device_info})")
+                else:
+                    self._log(f"Modbus TCP Donanımına Bağlanılamadı: {mb_ip}:{mb_port}")
+                    return
+
+            else:
+                # OpenOPC / Windows DCOM Miras Sunucu
+                from concurrent.futures import ThreadPoolExecutor
+                self._opc_executor = ThreadPoolExecutor(max_workers=1)
+                try:
+                    def _create_client():
+                        try:
+                            import pythoncom as _pythoncom
+                            _pythoncom.CoInitialize()
+                        except Exception:
+                            pass
+                        import OpenOPC as _OpenOPC
+                        c = _OpenOPC.client()
+                        prog = self.prog_id.replace("[Miras OPC DA] ", "").strip()
+                        c.connect(prog)
+                        return c
+
+                    opc = await loop.run_in_executor(self._opc_executor, _create_client)
+                    self._opc = opc
+                    self._log(f"Miras OPC DA sunucusuna bağlandı: {self.prog_id}")
+                except Exception as e:
+                    self._log(f"OPC DA bağlantı hatası: {e}")
                     try:
-                        import pythoncom as _pythoncom
-                        _pythoncom.CoInitialize()
+                        self._opc_executor.shutdown(wait=False)
                     except Exception:
                         pass
-                    import OpenOPC as _OpenOPC
-                    c = _OpenOPC.client()
-                    c.connect(self.prog_id)
-                    return c
-
-                opc = await loop.run_in_executor(self._opc_executor, _create_client)
-                self._opc = opc
-                self._log(f"OPC DA baglandi: {self.prog_id}")
-            except Exception as e:
-                self._log(f"OPC DA baglanti hatasi: {e}")
-                try:
-                    self._opc_executor.shutdown(wait=False)
-                except Exception:
-                    pass
-                return
+                    return
 
             etiket_haritasi = {}
             for et in self.etiketler:
@@ -1968,6 +2051,16 @@ class GatewayWorker(QThread):
                     exe.shutdown(wait=False)
             except Exception:
                 pass
+            try:
+                if getattr(self, "_s7_client", None):
+                    self._s7_client.disconnect()
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_modbus_client", None):
+                    self._modbus_client.disconnect()
+            except Exception:
+                pass
             self._log("Gateway durduruldu.")
 
     def durdur(self):
@@ -2085,30 +2178,68 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self._log_koprusu.yaz(metin)
 
     def _sunucu_tara(self):
+        self._log("Endüstriyel PLC ve donanım portları taranıyor (Siemens S7, Modbus, OPC UA)...")
         try:
-            site_path_ekle()
-            import OpenOPC
-            opc = OpenOPC.client()
-            sunucular = opc.servers()
+            self._discovered_devices = {}
+            devices = HardwareScanner.scan_all(timeout=0.4, scan_opc_da=True)
             self.cb_sunucu.clear()
-            self.cb_sunucu.addItems(sunucular)
-            self._log(f"{len(sunucular)} sunucu bulundu.")
-        except ImportError:
-            self._log("Endüstriyel altyapı eksik! Lütfen 'Gereksinimler\\Altyapi_Kurulumu.bat' dosyasını çalıştırın.")
+            for dev in devices:
+                self._discovered_devices[dev.display_name] = dev
+                self.cb_sunucu.addItem(dev.display_name)
+            self._log(f"Toplam {len(devices)} adet PLC donanımı ve sunucu başarıyla tespit edildi.")
         except Exception as e:
-            self._log(f"Sunucu tarama hatasi: {e}")
+            self._log(f"Donanım tarama hatası: {e}")
 
     def _etiket_tara(self):
-        prog_id = self.cb_sunucu.currentText().strip()
-        if not prog_id:
-            QMessageBox.warning(self, "Uyari", "Once sunucu tarayin ve secin.")
+        selected_text = self.cb_sunucu.currentText().strip()
+        if not selected_text:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce donanım tarayın ve bir PLC / sunucu seçin.")
             return
+
+        dev = getattr(self, "_discovered_devices", {}).get(selected_text)
+        self.list_etiket.clear()
+
+        # 1. Siemens S7 Donanımı
+        if dev and dev.protocol == "S7":
+            try:
+                s7 = S7Driver(dev.ip, dev.port)
+                if s7.connect():
+                    tags = s7.discover_tags(db_number=1, max_bytes=1000)
+                    for t in tags:
+                        self.list_etiket.addItem(t["name"])
+                    s7.disconnect()
+                    self._log(f"Siemens S7 PLC ({dev.ip}:{dev.port}) üzerinden {len(tags)} etiket listelendi.")
+                else:
+                    self._log(f"Siemens S7 PLC'ye bağlanılamadı: {dev.ip}:{dev.port}")
+            except Exception as e:
+                self._log(f"S7 etiket tarama hatası: {e}")
+            return
+
+        # 2. Modbus TCP Donanımı
+        if dev and dev.protocol == "MODBUS":
+            try:
+                mb = ModbusDriver(dev.ip, dev.port)
+                if mb.connect():
+                    tags = mb.discover_tags(max_registers=100)
+                    for t in tags:
+                        self.list_etiket.addItem(t["name"])
+                    mb.disconnect()
+                    self._log(f"Modbus TCP PLC ({dev.ip}:{dev.port}) üzerinden {len(tags)} register listelendi.")
+                else:
+                    self._log(f"Modbus PLC'ye bağlanılamadı: {dev.ip}:{dev.port}")
+            except Exception as e:
+                self._log(f"Modbus etiket tarama hatası: {e}")
+            return
+
+        # 3. Miras OPC DA Sunucusu
         try:
             site_path_ekle()
             import OpenOPC
             opc = OpenOPC.client()
+            prog_id = selected_text
+            if prog_id.startswith("[Miras OPC DA] "):
+                prog_id = prog_id.replace("[Miras OPC DA] ", "").strip()
             opc.connect(prog_id)
-            self.list_etiket.clear()
             etiketler = []
             for pattern in ['Simulation Items.*', 'Configured Aliases.*',
                             'Channel1.Device1.*', '*']:
@@ -2122,14 +2253,14 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             if not etiketler:
                 etiketler = ['Random.Real8', 'Random.Int4', 'Bucket Brigade.Real8',
                              'Random.Money', 'Triangle Waves.Real8']
-                self._log("Otomatik etiket bulunamadi -- demo etiketler gosteriliyor.")
+                self._log("Otomatik etiket bulunamadı -- varsayılan etiketler gösteriliyor.")
             self.list_etiket.addItems(etiketler)
             opc.close()
             self._log(f"{len(etiketler)} etiket listelendi.")
         except ImportError:
-            self._log("OpenOPC kurulu degil -- Kurulum Merkezi'ni acin.")
+            self._log("Miras OPC DA kütüphaneleri (OpenOPC) eksik.")
         except Exception as e:
-            self._log(f"Etiket tarama hatasi: {e}")
+            self._log(f"Etiket tarama hatası: {e}")
 
     def _baslat(self):
         # --- Dağıtık lisans kontrolü (A8) ---
