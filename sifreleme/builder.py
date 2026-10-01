@@ -58,7 +58,10 @@ hedef_uygulamalar = {
 def build_simple_fortress():
     current_dir = os.path.dirname(os.path.abspath(__file__))
 
-    for output_name, config in hedef_uygulamalar.items():
+    selected_targets = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+    items_to_build = {k: v for k, v in hedef_uygulamalar.items() if not selected_targets or k in selected_targets}
+
+    for output_name, config in items_to_build.items():
         target_py = os.path.normpath(os.path.join(current_dir, config["yol"]))
         is_console = config.get("console", False)
 

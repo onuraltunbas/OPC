@@ -298,7 +298,7 @@ class ChallengeUretici:
     @staticmethod
     def uret(hwid_hash: str) -> str:
         ts_slot = int(time.time()) // 600  # 10 dakikalık dilim
-        raw = hwid_hash[:8].encode("ascii") + struct.pack(">Q", ts_slot)
+        raw = hwid_hash[:8].encode("utf-8") + struct.pack(">Q", ts_slot)
         b32 = base64.b32encode(raw).decode().rstrip("=")
         return f"REQ-{b32[:20]}"
 
@@ -427,9 +427,13 @@ class OfflineLisansYoneticisi:
         """Döndürür: (basari: bool, mesaj: str, yetki: str, sure_gun: int)"""
         try:
             p = act_kodu.strip().upper().split("-")
-            if len(p) != 4 or p[0] != "ACT":
+            if len(p) == 4 and p[0] == "ACT":
+                sure_str, yetki, imza = p[1], p[2], p[3]
+            elif len(p) == 3 and p[0] == "ACT":
+                sure_str, yetki, imza = p[1], "FULL", p[2]
+            else:
                 return False, "Geçersiz aktivasyon kodu formatı.", "", 0
-            sure_str, yetki, imza = p[1], p[2], p[3]
+
             if not sure_str.endswith("D"):
                 return False, "Geçersiz süre formatı.", "", 0
             sure_gun = int(sure_str[:-1])
@@ -443,10 +447,20 @@ class OfflineLisansYoneticisi:
         if self._burnin_kontrol(imza):
             return False, "Bu aktivasyon kodu daha önce kullanılmış.", "", 0
 
-        # HMAC imza doğrulama (URUN_TIPI prefix ile ürün izolasyonu sağlanır)
-        mesaj = f"{URUN_TIPI}|{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8")
-        beklenen = hmac.new(OFFLINE_SECRET_KEY, mesaj, hashlib.sha256).hexdigest()[:16].upper()
-        if not hmac.compare_digest(imza, beklenen):
+        # HMAC imza doğrulama (hem ürün izolasyonlu hem evrensel kodları destekler)
+        olasi_mesajlar = [
+            f"{URUN_TIPI}|{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8"),
+            f"{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8"),
+            f"{challenge_kodu}|{sure_gun}".encode("utf-8"),
+        ]
+        dogrulandi = False
+        for msg in olasi_mesajlar:
+            beklenen = hmac.new(OFFLINE_SECRET_KEY, msg, hashlib.sha256).hexdigest()[:16].upper()
+            if hmac.compare_digest(imza, beklenen):
+                dogrulandi = True
+                break
+
+        if not dogrulandi:
             return False, "Aktivasyon kodu imzası geçersiz.", "", 0
 
         # Challenge'daki HWID prefix'ini doğrula
