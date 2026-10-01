@@ -2382,6 +2382,8 @@ def uygulamayi_baslat():
             kok_dizin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
             if kok_dizin not in sys.path:
                 sys.path.insert(0, kok_dizin)
+            if os.getcwd() not in sys.path:
+                sys.path.insert(0, os.getcwd())
             from opc_simulasyon_test_harness import OpcSimulasyonTestHarness
             harness = OpcSimulasyonTestHarness(toplam_etiket=1000, hata_orani=0.05, istasyon_adi="Saha_Istasyonu_Benchmark")
             harness.kapsamli_test_yurut(cevrim_adedi=30)
