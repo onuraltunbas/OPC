@@ -165,7 +165,7 @@ if __name__ == "__main__":
         drivers_dir = os.path.join(hwid_dir, 'drivers')
 
         pyinstaller_cmd = [
-            "pyinstaller", "--onefile", console_flag,
+            "pyinstaller", "--noconfirm", "--onefile", console_flag,
             "--noupx", "--name=" + output_name,
             f"--icon={logo_path}",
             f"--version-file={ver_path}",

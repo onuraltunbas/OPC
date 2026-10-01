@@ -181,17 +181,54 @@ def main():
     print("-" * 80)
     print(" [ADIM 5/5] Endüstriyel Ağ Güvenlik Duvarı Kuralları Tanımlanıyor...")
     print("-" * 80)
-    rules = [
+    
+    # Standart / Temel Endüstriyel Portlar (Her zaman açılır)
+    base_rules = [
         ("Nautilus OPC UA Gateway (Port 4840)", "4840"),
         ("Nautilus Siemens S7 PLC (Port 102/1102)", "102,1102"),
         ("Nautilus Modbus TCP PLC (Port 502/5020/5021)", "502,5020,5021"),
-        ("Nautilus Simulatör OPC UA (Port 4845)", "4845"),
     ]
-    for r_name, r_ports in rules:
+    
+    # İsteğe Bağlı Donanım ve Marka Portları
+    optional_rules = [
+        ("Nautilus Simulatör Test (Port 4845)", "4845"),
+        ("Nautilus Rockwell EtherNet-IP (Port 44818)", "44818"),
+        ("Nautilus Mitsubishi MELSEC (Port 48898/48899/5002)", "48898,48899,5002"),
+        ("Nautilus Omron FINS (Port 9600)", "9600"),
+        ("Nautilus Industrial MQTT (Port 1883/8883)", "1883,8883"),
+    ]
+
+    for r_name, r_ports in base_rules:
         subprocess.run(f'netsh advfirewall firewall delete rule name="{r_name}"', shell=True, capture_output=True)
         cmd = f'netsh advfirewall firewall add rule name="{r_name}" dir=in action=allow protocol=TCP localport={r_ports}'
         subprocess.run(cmd, shell=True, capture_output=True)
-        print(f" [+] {r_name} -> TCP {r_ports} gelen bağlantılara açıldı.")
+        print(f" [+] [TEMEL] {r_name} -> TCP {r_ports} gelen bağlantılara açıldı.")
+
+    # İsteğe bağlı port kontrolü
+    open_optional = False
+    if "--all-ports" in sys.argv or "--include-optional" in sys.argv:
+        open_optional = True
+    elif sys.stdin and sys.stdin.isatty() and "--base-only" not in sys.argv:
+        try:
+            print("\n [?] İsteğe bağlı ek donanım/marka portları:")
+            print("     • Nautilus Simülatör Test Portu (TCP 4845)")
+            print("     • Rockwell / Allen-Bradley EtherNet/IP (TCP 44818)")
+            print("     • Mitsubishi MELSEC / SLMP (TCP 48898, 48899, 5002)")
+            print("     • Omron FINS (TCP 9600)")
+            print("     • Endüstriyel MQTT (TCP 1883, 8883)")
+            cevap = input("     Bu portlar da güvenlik duvarında açılsın mı? [E/H] (Varsayılan: H): ").strip().upper()
+            if cevap == "E":
+                open_optional = True
+        except Exception:
+            pass
+
+    if open_optional:
+        print()
+        for r_name, r_ports in optional_rules:
+            subprocess.run(f'netsh advfirewall firewall delete rule name="{r_name}"', shell=True, capture_output=True)
+            cmd = f'netsh advfirewall firewall add rule name="{r_name}" dir=in action=allow protocol=TCP localport={r_ports}'
+            subprocess.run(cmd, shell=True, capture_output=True)
+            print(f" [+] [İSTEĞE BAĞLI] {r_name} -> TCP {r_ports} gelen bağlantılara açıldı.")
 
     with open(tag_file, "a", encoding="utf-8") as f:
         f.write("firewall_biz_actik=1\n")

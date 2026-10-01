@@ -64,7 +64,12 @@ def main():
         "Nautilus OPC UA Gateway (Port 4840)",
         "Nautilus Siemens S7 PLC (Port 102/1102)",
         "Nautilus Modbus TCP PLC (Port 502/5020/5021)",
+        "Nautilus Simulatör Test (Port 4845)",
         "Nautilus Simulatör OPC UA (Port 4845)",
+        "Nautilus Rockwell EtherNet-IP (Port 44818)",
+        "Nautilus Mitsubishi MELSEC (Port 48898/48899/5002)",
+        "Nautilus Omron FINS (Port 9600)",
+        "Nautilus Industrial MQTT (Port 1883/8883)",
     ]
     for r in rules_to_delete:
         subprocess.run(f'netsh advfirewall firewall delete rule name="{r}"', shell=True, capture_output=True)
