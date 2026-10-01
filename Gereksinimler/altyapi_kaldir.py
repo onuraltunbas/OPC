@@ -58,9 +58,17 @@ def main():
 
     # 1. Güvenlik Duvarı
     print("  [1/6] Güvenlik duvarı kuralları siliniyor...")
-    subprocess.run('netsh advfirewall firewall delete rule name="TÜBİTAK 2209-B OPC Gateway (Port 4840)"', shell=True, capture_output=True)
-    subprocess.run('netsh advfirewall firewall delete rule name="Nautilus OPC Gateway"', shell=True, capture_output=True)
-    print("  [+] Port 4840 güvenlik duvarı kuralları kaldırıldı.")
+    rules_to_delete = [
+        "TÜBİTAK 2209-B OPC Gateway (Port 4840)",
+        "Nautilus OPC Gateway",
+        "Nautilus OPC UA Gateway (Port 4840)",
+        "Nautilus Siemens S7 PLC (Port 102/1102)",
+        "Nautilus Modbus TCP PLC (Port 502/5020/5021)",
+        "Nautilus Simulatör OPC UA (Port 4845)",
+    ]
+    for r in rules_to_delete:
+        subprocess.run(f'netsh advfirewall firewall delete rule name="{r}"', shell=True, capture_output=True)
+    print("  [+] Tüm endüstriyel port güvenlik duvarı kuralları kaldırıldı.")
 
     # 2. OPCDAAuto.dll
     print("  [2/6] OPC DA COM Automation sürücü kaydı denetleniyor...")

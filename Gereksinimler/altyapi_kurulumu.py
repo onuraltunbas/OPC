@@ -179,21 +179,22 @@ def main():
 
     # ADIM 5: Windows Güvenlik Duvarı
     print("-" * 80)
-    print(" [ADIM 5/5] Endüstriyel Ağ Güvenlik Duvarı Kuralı Tanımlanıyor...")
+    print(" [ADIM 5/5] Endüstriyel Ağ Güvenlik Duvarı Kuralları Tanımlanıyor...")
     print("-" * 80)
-    rule_name = "TÜBİTAK 2209-B OPC Gateway (Port 4840)"
-    check_cmd = f'netsh advfirewall firewall show rule name="{rule_name}"'
-    res = subprocess.run(check_cmd, shell=True, capture_output=True)
-    if res.returncode == 0:
-        print(" [+] Güvenlik duvarı kuralı zaten mevcut (Atlandı).")
-    else:
-        add_cmd1 = f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=allow protocol=TCP localport=4840'
-        add_cmd2 = 'netsh advfirewall firewall add rule name="Nautilus OPC Gateway" dir=in action=allow protocol=TCP localport=4840'
-        subprocess.run(add_cmd1, shell=True, capture_output=True)
-        subprocess.run(add_cmd2, shell=True, capture_output=True)
-        print(" [+] TCP 4840 (OPC UA İletişim Portu) gelen bağlantılara açıldı.")
-        with open(tag_file, "a", encoding="utf-8") as f:
-            f.write("firewall_biz_actik=1\n")
+    rules = [
+        ("Nautilus OPC UA Gateway (Port 4840)", "4840"),
+        ("Nautilus Siemens S7 PLC (Port 102/1102)", "102,1102"),
+        ("Nautilus Modbus TCP PLC (Port 502/5020/5021)", "502,5020,5021"),
+        ("Nautilus Simulatör OPC UA (Port 4845)", "4845"),
+    ]
+    for r_name, r_ports in rules:
+        subprocess.run(f'netsh advfirewall firewall delete rule name="{r_name}"', shell=True, capture_output=True)
+        cmd = f'netsh advfirewall firewall add rule name="{r_name}" dir=in action=allow protocol=TCP localport={r_ports}'
+        subprocess.run(cmd, shell=True, capture_output=True)
+        print(f" [+] {r_name} -> TCP {r_ports} gelen bağlantılara açıldı.")
+
+    with open(tag_file, "a", encoding="utf-8") as f:
+        f.write("firewall_biz_actik=1\n")
 
     print()
 

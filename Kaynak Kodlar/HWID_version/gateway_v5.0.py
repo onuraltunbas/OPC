@@ -1183,11 +1183,13 @@ class Ui_MainWindow(object):
         lay_etiket.addWidget(self.list_etiket)
 
         grp_baslat = QtWidgets.QGroupBox("Yayin Ayarlari", self.centralwidget)
-        grp_baslat.setGeometry(540, 20, 260, 130)
+        grp_baslat.setGeometry(530, 20, 270, 160)
         lay_baslat = QtWidgets.QFormLayout(grp_baslat)
-        self.txt_ip   = QtWidgets.QLineEdit("0.0.0.0")
-        self.txt_port = QtWidgets.QLineEdit("4840")
-        self.btn_baslat = QtWidgets.QPushButton("Baslat")
+        self.txt_ip        = QtWidgets.QLineEdit("0.0.0.0")
+        self.txt_port      = QtWidgets.QLineEdit("4840")
+        self.txt_izinli_ip = QtWidgets.QLineEdit("")
+        self.txt_izinli_ip.setPlaceholderText("Boş = Herkes (Örn: 10.20.30.85)")
+        self.btn_baslat    = QtWidgets.QPushButton("Baslat")
         self.btn_baslat.setStyleSheet("""
             QPushButton {
                 background-color: #2e7d32; color: white; font-weight: bold; border-radius: 6px; padding: 6px; border: none;
@@ -1206,6 +1208,7 @@ class Ui_MainWindow(object):
         self.btn_durdur.setEnabled(False)
         lay_baslat.addRow("Yayin IP:", self.txt_ip)
         lay_baslat.addRow("Port:", self.txt_port)
+        lay_baslat.addRow("İzinli IP'ler:", self.txt_izinli_ip)
         lay_baslat.addRow(self.btn_baslat)
         lay_baslat.addRow(self.btn_durdur)
 
@@ -1417,14 +1420,15 @@ class GatewayWorker(QThread):
     log_sinyali   = pyqtSignal(str)
     bitti_sinyali = pyqtSignal()
 
-    def __init__(self, prog_id, ip, port, etiketler, yetki="FULL"): # yetki eklendi
+    def __init__(self, prog_id, ip, port, etiketler, yetki="FULL", izinli_ipler=""): # yetki eklendi
         super().__init__()
-        self.prog_id    = prog_id
-        self.ip         = ip
-        self.port       = port
-        self.etiketler  = etiketler
-        self.yetki      = yetki # yetki kaydedildi
-        self._calisıyor = True
+        self.prog_id      = prog_id
+        self.ip           = ip
+        self.port         = port
+        self.etiketler    = etiketler
+        self.yetki        = yetki # yetki kaydedildi
+        self.izinli_ipler = izinli_ipler
+        self._calisıyor   = True
         # Optional CSV logging path (None = disabled)
         self.csv_path = None
         # Performance tuning knobs (STA-safe: single COM worker stays unchanged)
@@ -1753,6 +1757,33 @@ class GatewayWorker(QThread):
         idx = await srv.register_namespace("http://opcgateway/v4")
         kok = await srv.nodes.objects.add_object(idx, "Saha_Verileri")
 
+        # ── İstemci IP Filtreleme / Beyaz Liste Yapılandırması ──
+        allowed_ips = set()
+        if hasattr(self, "izinli_ipler") and self.izinli_ipler and self.izinli_ipler.strip():
+            raw_ips = [ip.strip() for ip in self.izinli_ipler.replace(";", ",").split(",") if ip.strip()]
+            allowed_ips = set(raw_ips)
+            self._log(f"🛡️ [GÜVENLİK AKTİF] Yalnızca şu IP'lerin bağlanmasına izin verildi: {', '.join(allowed_ips)}")
+        else:
+            self._log("🌐 [GÜVENLİK] IP kısıtlaması yok (Tüm yerel ağa ve istemcilere açık).")
+
+        from asyncua.server.binary_server_asyncio import OPCUAProtocol
+        old_connection_made = OPCUAProtocol.connection_made
+        log_cb = self._log
+
+        def secure_connection_made(proto_self, transport):
+            peer = transport.get_extra_info("peername")
+            client_ip = peer[0] if peer else ""
+            if allowed_ips:
+                if client_ip not in allowed_ips and client_ip not in ("127.0.0.1", "::1", "localhost"):
+                    log_cb(f"🛑 [GÜVENLİK ENGELİ] Yetkisiz IP ({client_ip}) bağlantı denemesi engellendi!")
+                    transport.close()
+                    return
+                else:
+                    log_cb(f"🛡️ [GÜVENLİK ONAYI] İzinli IP ({client_ip}) bağlantı sağladı.")
+            old_connection_made(proto_self, transport)
+
+        OPCUAProtocol.connection_made = secure_connection_made
+
         async with srv:
             loop = asyncio.get_running_loop()
             self._log(f"OPC UA Sunucusu yayinda: {endpoint}")
@@ -2061,6 +2092,10 @@ class GatewayWorker(QThread):
                     self._modbus_client.disconnect()
             except Exception:
                 pass
+            try:
+                OPCUAProtocol.connection_made = old_connection_made
+            except Exception:
+                pass
             self._log("Gateway durduruldu.")
 
     def durdur(self):
@@ -2283,14 +2318,15 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             QMessageBox.warning(self, "Hata", "Lutfen en az bir etiket secin.")
             return
 
-        ip   = self.txt_ip.text().strip() or "0.0.0.0"
-        port = self.txt_port.text().strip() or "4840"
+        ip        = self.txt_ip.text().strip() or "0.0.0.0"
+        port      = self.txt_port.text().strip() or "4840"
+        izinli_ip = self.txt_izinli_ip.text().strip() if hasattr(self, "txt_izinli_ip") else ""
 
         self.txt_konsol.clear()
         self.btn_baslat.setEnabled(False)
         self.btn_durdur.setEnabled(True)
 
-        self.worker = GatewayWorker(prog_id, ip, port, secili, self._offline_yetki)
+        self.worker = GatewayWorker(prog_id, ip, port, secili, self._offline_yetki, izinli_ipler=izinli_ip)
         self.worker.log_sinyali.connect(self._log)
         self.worker.bitti_sinyali.connect(self._bitti)
         self.worker.start()
