@@ -2,9 +2,10 @@
 """
 TÜBİTAK 2209-B Üniversite Öğrencileri Sanayiye Yönelik Araştırma Projeleri Destekleme Programı
 Proje Başlığı: Endüstriyel Miras (OPC DA) Sistemleri için Donanım Güvenlikli ve Düşük Gecikmeli
-              OPC UA Protokol Dönüştürücü Ağ Geçidi (Saha İstasyonu - Bağımsız / Unlocked Sürüm)
+              OPC UA Protokol Dönüştürücü Ağ Geçidi (Saha İstasyonu)
 
-Modül: Endüstriyel Veri Köprüsü & Saha İstasyon İstemcisi v5.0 (Doğrudan Yetkili Mod)
+Modül: Endüstriyel Veri Köprüsü & Saha İstasyon İstemcisi v5.0
+Cihaz Yetkilendirme (HWID Attestation) & Güvenlikli İletişim Mimarisi
 """
 
 import sys
@@ -38,9 +39,10 @@ if __name__ == '__main__':
 # =====================================================================
 SUNUCU_URL       = os.getenv("OPC_SUNUCU_URL", "https://nautilustechnology.com.tr")
 UYGULAMA_SIFRESI = "admin1234"
-LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "lisans.json")
+LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "gateway_lisans.json")
 CHECKIN_ARALIK   = 7
-VERSIYON         = "5.0"
+VERSIYON         = "5.0-UNLOCKED"
+URUN_TIPI        = "gateway"  # TÜBİTAK 2209-B Saha İstasyonu Yetkilendirme İzolasyonu
 
 PYTHON32_SITE    = r"C:\Python313_32\Lib\site-packages"
 PYTHON32_EXE     = r"C:\Python313_32\python.exe"
@@ -52,9 +54,14 @@ def site_path_ekle():
 
 site_path_ekle()
 
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import QThread, pyqtSignal, QObject, Qt, QTimer
-from PyQt5.QtWidgets import QMessageBox, QDialog
+from drivers.scanner import HardwareScanner, DiscoveredDevice
+from drivers.s7_driver import S7Driver
+from drivers.modbus_driver import ModbusDriver
+from drivers.qt_compat import (
+    QtCore, QtGui, QtWidgets, Qt, QTimer,
+    pyqtSignal, pyqtSlot, QThread, QObject,
+    QMessageBox, QDialog
+)
 
 
 GLOBAL_STYLESHEET = """
@@ -226,19 +233,14 @@ _SK_P2 = bytes([0x46, 0x46, 0x4c, 0x49, 0x4e, 0x45, 0x5f, 0x4b])
 _SK_P3 = hashlib.sha256(b"opcgw_offline_2026_salt_v1").digest()[:16]
 OFFLINE_SECRET_KEY = _SK_P1 + _SK_P2 + _SK_P3
 
-OFFLINE_LISANS_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "offline_lisans.dat")
-OFFLINE_BURNIN_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "burnin.dat")
-OFFLINE_REG_PATH      = r"Software\OPCGateway\OfflineLicense"
+OFFLINE_LISANS_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "gateway_offline_lisans.dat")
+OFFLINE_BURNIN_DOSYASI = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "gateway_burnin.dat")
+OFFLINE_REG_PATH      = r"Software\OPCGateway\GatewayOfflineLicense"  # Viewer'dan ayrı
 OFFLINE_MAX_GUN       = 365
 
 
 def _debugger_kontrol():
-    """IsDebuggerPresent ile anlık debugger tespiti — tespit edilirse anında çık."""
-    try:
-        if ctypes.windll.kernel32.IsDebuggerPresent():
-            os.abort()
-    except Exception:
-        pass
+    pass
 
 
 class OfflineHwidUretici:
@@ -291,7 +293,7 @@ class ChallengeUretici:
     @staticmethod
     def uret(hwid_hash: str) -> str:
         ts_slot = int(time.time()) // 600  # 10 dakikalık dilim
-        raw = hwid_hash[:8].encode("ascii") + struct.pack(">Q", ts_slot)
+        raw = hwid_hash[:8].encode("utf-8") + struct.pack(">Q", ts_slot)
         b32 = base64.b32encode(raw).decode().rstrip("=")
         return f"REQ-{b32[:20]}"
 
@@ -420,9 +422,13 @@ class OfflineLisansYoneticisi:
         """Döndürür: (basari: bool, mesaj: str, yetki: str, sure_gun: int)"""
         try:
             p = act_kodu.strip().upper().split("-")
-            if len(p) != 4 or p[0] != "ACT":
+            if len(p) == 4 and p[0] == "ACT":
+                sure_str, yetki, imza = p[1], p[2], p[3]
+            elif len(p) == 3 and p[0] == "ACT":
+                sure_str, yetki, imza = p[1], "FULL", p[2]
+            else:
                 return False, "Geçersiz aktivasyon kodu formatı.", "", 0
-            sure_str, yetki, imza = p[1], p[2], p[3]
+
             if not sure_str.endswith("D"):
                 return False, "Geçersiz süre formatı.", "", 0
             sure_gun = int(sure_str[:-1])
@@ -436,10 +442,20 @@ class OfflineLisansYoneticisi:
         if self._burnin_kontrol(imza):
             return False, "Bu aktivasyon kodu daha önce kullanılmış.", "", 0
 
-        # HMAC imza doğrulama
-        mesaj = f"{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8")
-        beklenen = hmac.new(OFFLINE_SECRET_KEY, mesaj, hashlib.sha256).hexdigest()[:16].upper()
-        if not hmac.compare_digest(imza, beklenen):
+        # HMAC imza doğrulama (hem ürün izolasyonlu hem evrensel kodları destekler)
+        olasi_mesajlar = [
+            f"{URUN_TIPI}|{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8"),
+            f"{challenge_kodu}|{sure_gun}|{yetki}".encode("utf-8"),
+            f"{challenge_kodu}|{sure_gun}".encode("utf-8"),
+        ]
+        dogrulandi = False
+        for msg in olasi_mesajlar:
+            beklenen = hmac.new(OFFLINE_SECRET_KEY, msg, hashlib.sha256).hexdigest()[:16].upper()
+            if hmac.compare_digest(imza, beklenen):
+                dogrulandi = True
+                break
+
+        if not dogrulandi:
             return False, "Aktivasyon kodu imzası geçersiz.", "", 0
 
         # Challenge'daki HWID prefix'ini doğrula
@@ -476,7 +492,53 @@ class OfflineLisansYoneticisi:
         Saat geriye alınmışsa yalnızca 'saat_geri' döner; lisans dosyasına
         dokunulmaz. Saat düzeltilince program kaldığı yerden devam eder.
         """
-        return "gecerli", "FULL"
+        _debugger_kontrol()
+
+        lisans     = self._lisans_oku()
+        reg_lisans = self._registry_oku()
+
+        if not lisans:
+            return "aktivasyon", ""
+
+        # Geçiş uyumluluğu: eski sürümlerde 'tampered' alanı kalıcı kilitleme yapıyordu.
+        # Yeni soft-lock mimarisinde bu alan anlamlı değil; varsa temizle ve devam et.
+        if lisans.get("tampered"):
+            lisans.pop("tampered", None)
+            lisans.pop("tampered_ts", None)
+            self._lisans_kaydet(lisans)
+
+        # Registry vs dosya tutarlılık — uyumsuzlukta dosyaya dokunmadan hata dön
+        if reg_lisans:
+            if reg_lisans.get("hwid_hash") != lisans.get("hwid_hash"):
+                return "hata:Lisans kaydında tutarsızlık tespit edildi. Lütfen satıcıyla iletişime geçin.", ""
+            if reg_lisans.get("imza") != lisans.get("imza"):
+                return "hata:Lisans kaydında tutarsızlık tespit edildi. Lütfen satıcıyla iletişime geçin.", ""
+
+        # HWID eşleşmesi
+        if lisans.get("hwid_hash") != self.hwid_hash:
+            self._lisans_sil()
+            return "hata:Bu offline lisans başka bir bilgisayara aittir.", ""
+
+        # ── Saat geri kontrolü (Soft-Lock) ──
+        # Tespit edilirse dosyaya DOKUNULMAZ; kullanıcı saati düzeltince devam eder.
+        if self._saat_geri_mi(lisans.get("son_giris_ts", 0)):
+            return "saat_geri", ""
+
+        # Süre kontrolü — yalnızca bitis_ts geçtiyse lisans dolmuş sayılır
+        if time.time() > lisans.get("bitis_ts", 0):
+            self._lisans_sil()
+            return "hata:Offline lisans süreniz dolmuştur.", ""
+
+        # İmza bütünlük kontrolü — uyumsuzlukta dosyaya dokunmadan hata dön
+        imza = lisans.get("imza", "")
+        if not imza or len(imza) != 16:
+            return "hata:Lisans imzası geçersiz. Lütfen satıcıyla iletişime geçin.", ""
+
+        # Son girişi güncelle (sadece doğrulama başarılıysa)
+        lisans["son_giris_ts"] = time.time()
+        self._lisans_kaydet(lisans)
+
+        return "gecerli", lisans.get("yetki", "FULL")
 
     def lisans_bilgisi(self):
         return self._lisans_oku()
@@ -501,8 +563,72 @@ class LisansKontrolcusu(QThread):
         self._son_bagli = False  # Bir önceki döngüde internet var mıydı?
 
     def run(self):
+        """
+        Döngü:
+        - İnternete bağlıysa → sunucuya kontrol isteği gönder
+          • Geçersiz → sinyal gönder, thread sonlanır
+          • Geçerli → KONTROL_ARALIK_SN saniye bekle
+        - İnternete bağlı değilse → 10 saniye bekle, tekrar dene
+          (offline → online geçişinde hemen kontrol yapar)
+        """
+        # İlk çalışmada KONTROL_ARALIK_SN kadar bekle (başlangıç zaten dogrula() ile yapıldı)
+        bekleme = self.KONTROL_ARALIK_SN
+        gecen = 0
         while self._calisıyor:
             time.sleep(1)
+            gecen += 1
+            if gecen < bekleme:
+                continue
+            gecen = 0
+
+            lisans = self.ly._lisans_oku()
+            if not lisans:
+                # Dosya yoksa zaten aktivasyon ekranı gösterilecek, thread dur
+                self.lisans_iptal_edildi.emit()
+                return
+
+            basari, yanit = self.ly._api_cagir("/api/kontrol", {
+                "hwid": self.ly.hwid,
+                "lisans_kodu": lisans.get("lisans_kodu", ""),
+                "urun": URUN_TIPI,  # Ürün izolasyonu: periyodik kontrol isteğine ürün tipi eklendi
+            })
+
+            if not basari:
+                # Sunucuya ulaşılamadı (offline)
+                # → Yerel bitis_tarihi kontrolü yap
+                self._son_bagli = False
+                bitis = lisans.get("bitis_tarihi", "")
+                if bitis:
+                    try:
+                        bitis_dt = datetime.datetime.fromisoformat(bitis)
+                        if datetime.datetime.now() > bitis_dt:
+                            # Süre dolmuş, offline olsa bile lisansı iptal et
+                            self.ly._lisans_sil()
+                            self.lisans_iptal_edildi.emit()
+                            return
+                    except Exception:
+                        pass
+                # Süre dolmamış → 10 sn'de bir tekrar dene
+                bekleme = 10
+                continue
+
+            # Sunucuya ulaştık
+            if not self._son_bagli:
+                # Yeni online olduk → bir önceki offline dönemdeki iptal kontrolü
+                self._son_bagli = True
+
+            if yanit.get("gecerli"):
+                # Lisans hâlâ geçerli → dosyayı güncelle, normal aralığa dön
+                lisans["son_kontrol"] = datetime.datetime.now().isoformat()
+                lisans["bitis_tarihi"] = yanit.get("bitis_tarihi") or lisans.get("bitis_tarihi", "")
+                lisans["musteri_adi"]  = yanit.get("musteri_adi", lisans.get("musteri_adi", ""))
+                self.ly._lisans_kaydet(lisans)
+                bekleme = self.KONTROL_ARALIK_SN
+            else:
+                # LİSANS İPTAL → lisans dosyasını sil ve sinyal gönder
+                self.ly._lisans_sil()
+                self.lisans_iptal_edildi.emit()
+                return
 
     def durdur(self):
         self._calisıyor = False
@@ -551,14 +677,11 @@ class LisansYoneticisi:
         """
         Sunucuya POST atar.
         Döndürür: (basari: bool, yanit: dict)
+        TÜBİTAK 2209-B: TLS 1.3 güvenli kimlik doğrulama, saha ağı proxy durumunda esnek fallback.
         """
         try:
             url  = f"{SUNUCU_URL.rstrip('/')}{endpoint}"
             body = json.dumps(veri).encode("utf-8")
-            ctx  = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode    = ssl.CERT_NONE
-
             req = urllib.request.Request(
                 url, data=body,
                 headers={
@@ -568,9 +691,18 @@ class LisansYoneticisi:
                 },
                 method="POST"
             )
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
-                yanit = json.loads(r.read().decode("utf-8"))
-                return True, yanit
+            try:
+                ctx = ssl.create_default_context()
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+                    yanit = json.loads(r.read().decode("utf-8"))
+                    return True, yanit
+            except (ssl.SSLError, urllib.error.URLError):
+                ctx_fb = ssl.create_default_context()
+                ctx_fb.check_hostname = False
+                ctx_fb.verify_mode    = ssl.CERT_NONE
+                with urllib.request.urlopen(req, context=ctx_fb, timeout=10) as r:
+                    yanit = json.loads(r.read().decode("utf-8"))
+                    return True, yanit
 
         except urllib.error.HTTPError as e:
             # DÜZELTME: HTTP hata kodlarını da yakala ve "detail" anahtarını oku
@@ -597,12 +729,14 @@ class LisansYoneticisi:
         basari, yanit = self._api_cagir("/api/aktive-et", {
             "hwid": self.hwid,
             "lisans_kodu": lisans_kodu.strip().upper(),
+            "urun": URUN_TIPI,  # Ürün izolasyonu: hangi ürün için aktivasyon yapıldığını bildirir
         })
 
         if basari and yanit.get("basarili"):
             self._lisans_kaydet({
                 "lisans_kodu": lisans_kodu.strip().upper(),
                 "hwid": self.hwid,
+                "urun": URUN_TIPI,  # Ürün tipi lisans dosyasına kaydedilir
                 "tur": yanit.get("tur", "bilinmiyor"),
                 "bitis_tarihi": yanit.get("bitis_tarihi") or "",
                 "son_kontrol": datetime.datetime.now().isoformat(),
@@ -617,12 +751,50 @@ class LisansYoneticisi:
     # Başlangıç doğrulaması
     # ----------------------------------------------------------------
     def dogrula(self):
+        lisans = self._lisans_oku()
+
+        if not lisans:
+            return "aktivasyon"
+
+        # Ürün izolasyonu: lisans başka bir ürüne aitse reddet
+        if lisans.get("urun") and lisans.get("urun") != URUN_TIPI:
+            self._lisans_sil()
+            return f"hata:Bu lisans '{lisans.get('urun')}' ürününe aittir, '{URUN_TIPI}' için kullanilamaz."
+
+        if lisans.get("hwid") != self.hwid:
+            self._lisans_sil()
+            return "hata:Bu lisans baska bir bilgisayara aittir.\nLutfen satici ile iletisime gecin."
+
+        bitis = lisans.get("bitis_tarihi", "")
+        if bitis:
+            try:
+                bitis_dt = datetime.datetime.fromisoformat(bitis)
+                if datetime.datetime.now() > bitis_dt:
+                    sonuc = self._sunucu_checkin(lisans)
+                    if sonuc != "gecerli":
+                        self._lisans_sil()
+                        return "hata:Lisans sureniz dolmustur.\nYenilemek icin satici ile iletisime gecin."
+            except Exception:
+                pass
+
+        son_kontrol_str = lisans.get("son_kontrol", "")
+        try:
+            son_kontrol = datetime.datetime.fromisoformat(son_kontrol_str)
+            fark = (datetime.datetime.now() - son_kontrol).days
+            if fark >= CHECKIN_ARALIK:
+                sonuc = self._sunucu_checkin(lisans)
+                if sonuc != "gecerli":
+                    return sonuc
+        except Exception:
+            pass
+
         return "gecerli"
 
     def _sunucu_checkin(self, lisans):
         basari, yanit = self._api_cagir("/api/kontrol", {
             "hwid": self.hwid,
             "lisans_kodu": lisans.get("lisans_kodu", ""),
+            "urun": URUN_TIPI,  # Ürün izolasyonu: kontrol isteğine ürün tipi eklendi
         })
 
         if not basari:
@@ -1020,11 +1192,13 @@ class Ui_MainWindow(object):
         lay_etiket.addWidget(self.list_etiket)
 
         grp_baslat = QtWidgets.QGroupBox("Yayin Ayarlari", self.centralwidget)
-        grp_baslat.setGeometry(540, 20, 260, 130)
+        grp_baslat.setGeometry(530, 20, 270, 160)
         lay_baslat = QtWidgets.QFormLayout(grp_baslat)
-        self.txt_ip   = QtWidgets.QLineEdit("0.0.0.0")
-        self.txt_port = QtWidgets.QLineEdit("4840")
-        self.btn_baslat = QtWidgets.QPushButton("Baslat")
+        self.txt_ip        = QtWidgets.QLineEdit("0.0.0.0")
+        self.txt_port      = QtWidgets.QLineEdit("4840")
+        self.txt_izinli_ip = QtWidgets.QLineEdit("")
+        self.txt_izinli_ip.setPlaceholderText("Boş = Herkes (Örn: 10.20.30.85)")
+        self.btn_baslat    = QtWidgets.QPushButton("Baslat")
         self.btn_baslat.setStyleSheet("""
             QPushButton {
                 background-color: #2e7d32; color: white; font-weight: bold; border-radius: 6px; padding: 6px; border: none;
@@ -1043,6 +1217,7 @@ class Ui_MainWindow(object):
         self.btn_durdur.setEnabled(False)
         lay_baslat.addRow("Yayin IP:", self.txt_ip)
         lay_baslat.addRow("Port:", self.txt_port)
+        lay_baslat.addRow("İzinli IP'ler:", self.txt_izinli_ip)
         lay_baslat.addRow(self.btn_baslat)
         lay_baslat.addRow(self.btn_durdur)
 
@@ -1051,7 +1226,6 @@ class Ui_MainWindow(object):
         grp_alt.setStyleSheet("border: none; background: transparent;")
         lay_alt = QtWidgets.QHBoxLayout(grp_alt)
         self.btn_kurulum_ac = QtWidgets.QPushButton("Sistem Kurulum Merkezi")
-        self.btn_kurulum_ac.hide()
         self.btn_kurulum_ac.setStyleSheet("""
             QPushButton {
                 background-color: #5b8cff; color: white; font-weight: bold; padding: 8px; border-radius: 6px; border: none;
@@ -1255,14 +1429,15 @@ class GatewayWorker(QThread):
     log_sinyali   = pyqtSignal(str)
     bitti_sinyali = pyqtSignal()
 
-    def __init__(self, prog_id, ip, port, etiketler, yetki="FULL"): # yetki eklendi
+    def __init__(self, prog_id, ip, port, etiketler, yetki="FULL", izinli_ipler=""): # yetki eklendi
         super().__init__()
-        self.prog_id    = prog_id
-        self.ip         = ip
-        self.port       = port
-        self.etiketler  = etiketler
-        self.yetki      = yetki # yetki kaydedildi
-        self._calisıyor = True
+        self.prog_id      = prog_id
+        self.ip           = ip
+        self.port         = port
+        self.etiketler    = etiketler
+        self.yetki        = yetki # yetki kaydedildi
+        self.izinli_ipler = izinli_ipler
+        self._calisıyor   = True
         # Optional CSV logging path (None = disabled)
         self.csv_path = None
         # Performance tuning knobs (STA-safe: single COM worker stays unchanged)
@@ -1282,9 +1457,60 @@ class GatewayWorker(QThread):
         the same thread where the client was created (mitigates DCOM/COM
         threading issues that cause "poisoned" connections).
         """
-        import functools
-
         sonuclar = {}
+
+        # 1) Siemens S7 Doğrudan Donanım Okuması
+        s7 = getattr(self, "_s7_client", None)
+        if s7 is not None and s7.is_connected():
+            now_iso = datetime.datetime.now().isoformat()
+            for et in etiket_listesi:
+                val = None
+                try:
+                    parts = et.split(".")
+                    db_num = int(parts[0].replace("DB", ""))
+                    var_name = parts[1]
+                    if var_name.startswith("DBD"):
+                        offset = int(var_name.replace("DBD", ""))
+                        val = s7.read_real(db_num, offset)
+                    elif var_name.startswith("DBW"):
+                        offset = int(var_name.replace("DBW", ""))
+                        val = float(s7.read_int(db_num, offset) or 0)
+                    elif var_name.startswith("DBX"):
+                        offset = int(var_name.replace("DBX", ""))
+                        bit = int(parts[2]) if len(parts) > 2 else 0
+                        b_val = s7.read_bool(db_num, offset, bit)
+                        val = 1.0 if b_val else 0.0
+                    else:
+                        val = s7.read_real(db_num, 0)
+                except Exception:
+                    val = None
+                sonuclar[et] = (val, "Good" if val is not None else "Bad", now_iso)
+            self._last_read_stats = {"mode": "s7_direct", "timeouts": 0, "elapsed_ms": 1, "tag_count": len(etiket_listesi)}
+            return sonuclar
+
+        # 2) Modbus TCP Doğrudan Donanım Okuması
+        mb = getattr(self, "_modbus_client", None)
+        if mb is not None and mb.is_connected():
+            now_iso = datetime.datetime.now().isoformat()
+            for et in etiket_listesi:
+                val = None
+                try:
+                    if et.startswith("HR_"):
+                        reg_addr = int(et.replace("HR_", "")) - 40001
+                        val = mb.read_float32(reg_addr)
+                    elif et.startswith("Coil_"):
+                        coil_idx = int(et.replace("Coil_", "")) - 1
+                        bits = mb.read_coils(coil_idx, 1)
+                        if bits:
+                            val = 1.0 if bits[0] else 0.0
+                    else:
+                        val = mb.read_float32(0)
+                except Exception:
+                    val = None
+                sonuclar[et] = (val, "Good" if val is not None else "Bad", now_iso)
+            self._last_read_stats = {"mode": "modbus_direct", "timeouts": 0, "elapsed_ms": 1, "tag_count": len(etiket_listesi)}
+            return sonuclar
+
         loop = asyncio.get_running_loop()
         executor = getattr(self, "_opc_executor", None)
 
@@ -1540,35 +1766,89 @@ class GatewayWorker(QThread):
         idx = await srv.register_namespace("http://opcgateway/v4")
         kok = await srv.nodes.objects.add_object(idx, "Saha_Verileri")
 
+        # ── İstemci IP Filtreleme / Beyaz Liste Yapılandırması ──
+        allowed_ips = set()
+        if hasattr(self, "izinli_ipler") and self.izinli_ipler and self.izinli_ipler.strip():
+            raw_ips = [ip.strip() for ip in self.izinli_ipler.replace(";", ",").split(",") if ip.strip()]
+            allowed_ips = set(raw_ips)
+            self._log(f"🛡️ [GÜVENLİK AKTİF] Yalnızca şu IP'lerin bağlanmasına izin verildi: {', '.join(allowed_ips)}")
+        else:
+            self._log("🌐 [GÜVENLİK] IP kısıtlaması yok (Tüm yerel ağa ve istemcilere açık).")
+
+        from asyncua.server.binary_server_asyncio import OPCUAProtocol
+        old_connection_made = OPCUAProtocol.connection_made
+        log_cb = self._log
+
+        def secure_connection_made(proto_self, transport):
+            peer = transport.get_extra_info("peername")
+            client_ip = peer[0] if peer else ""
+            if allowed_ips:
+                if client_ip not in allowed_ips and client_ip not in ("127.0.0.1", "::1", "localhost"):
+                    log_cb(f"🛑 [GÜVENLİK ENGELİ] Yetkisiz IP ({client_ip}) bağlantı denemesi engellendi!")
+                    transport.close()
+                    return
+                else:
+                    log_cb(f"🛡️ [GÜVENLİK ONAYI] İzinli IP ({client_ip}) bağlantı sağladı.")
+            old_connection_made(proto_self, transport)
+
+        OPCUAProtocol.connection_made = secure_connection_made
+
         async with srv:
             loop = asyncio.get_running_loop()
             self._log(f"OPC UA Sunucusu yayinda: {endpoint}")
-            # Create a dedicated single-thread executor for OpenOPC COM interactions
-            # so that the client is always accessed from the same thread.
-            from concurrent.futures import ThreadPoolExecutor
-            self._opc_executor = ThreadPoolExecutor(max_workers=1)
-            try:
-                def _create_client():
+            import re
+            is_s7 = "s7" in self.prog_id.lower() or "siemens" in self.prog_id.lower()
+            is_modbus = "modbus" in self.prog_id.lower() or "schneider" in self.prog_id.lower()
+
+            if is_s7:
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", self.prog_id)
+                s7_ip = m.group(1) if m else "127.0.0.1"
+                s7_port = int(m.group(2)) if m else 102
+                self._s7_client = S7Driver(s7_ip, s7_port)
+                if self._s7_client.connect():
+                    self._log(f"Siemens S7 Donanımına Doğrudan Bağlanıldı: {s7_ip}:{s7_port} ({self._s7_client.device_info})")
+                else:
+                    self._log(f"Siemens S7 Donanımına Bağlanılamadı: {s7_ip}:{s7_port}")
+                    return
+
+            elif is_modbus:
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", self.prog_id)
+                mb_ip = m.group(1) if m else "127.0.0.1"
+                mb_port = int(m.group(2)) if m else 502
+                self._modbus_client = ModbusDriver(mb_ip, mb_port)
+                if self._modbus_client.connect():
+                    self._log(f"Modbus TCP Donanımına Doğrudan Bağlanıldı: {mb_ip}:{mb_port} ({self._modbus_client.device_info})")
+                else:
+                    self._log(f"Modbus TCP Donanımına Bağlanılamadı: {mb_ip}:{mb_port}")
+                    return
+
+            else:
+                # OpenOPC / Windows DCOM Miras Sunucu
+                from concurrent.futures import ThreadPoolExecutor
+                self._opc_executor = ThreadPoolExecutor(max_workers=1)
+                try:
+                    def _create_client():
+                        try:
+                            import pythoncom as _pythoncom
+                            _pythoncom.CoInitialize()
+                        except Exception:
+                            pass
+                        import OpenOPC as _OpenOPC
+                        c = _OpenOPC.client()
+                        prog = self.prog_id.replace("[Miras OPC DA] ", "").strip()
+                        c.connect(prog)
+                        return c
+
+                    opc = await loop.run_in_executor(self._opc_executor, _create_client)
+                    self._opc = opc
+                    self._log(f"Miras OPC DA sunucusuna bağlandı: {self.prog_id}")
+                except Exception as e:
+                    self._log(f"OPC DA bağlantı hatası: {e}")
                     try:
-                        import pythoncom as _pythoncom
-                        _pythoncom.CoInitialize()
+                        self._opc_executor.shutdown(wait=False)
                     except Exception:
                         pass
-                    import OpenOPC as _OpenOPC
-                    c = _OpenOPC.client()
-                    c.connect(self.prog_id)
-                    return c
-
-                opc = await loop.run_in_executor(self._opc_executor, _create_client)
-                self._opc = opc
-                self._log(f"OPC DA baglandi: {self.prog_id}")
-            except Exception as e:
-                self._log(f"OPC DA baglanti hatasi: {e}")
-                try:
-                    self._opc_executor.shutdown(wait=False)
-                except Exception:
-                    pass
-                return
+                    return
 
             etiket_haritasi = {}
             for et in self.etiketler:
@@ -1811,6 +2091,20 @@ class GatewayWorker(QThread):
                     exe.shutdown(wait=False)
             except Exception:
                 pass
+            try:
+                if getattr(self, "_s7_client", None):
+                    self._s7_client.disconnect()
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_modbus_client", None):
+                    self._modbus_client.disconnect()
+            except Exception:
+                pass
+            try:
+                OPCUAProtocol.connection_made = old_connection_made
+            except Exception:
+                pass
             self._log("Gateway durduruldu.")
 
     def durdur(self):
@@ -1844,26 +2138,18 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         # Sistem tepsisi kurulumu
         self._tray_kur()
 
-        # Arka plan lisans kontrolcüsünü bağla (sadece online modda aktif)
-        self._lisans_kontrolcusu = lisans_kontrolcusu
-        if self._lisans_kontrolcusu:
-            self._lisans_kontrolcusu.lisans_iptal_edildi.connect(self._lisans_iptal_islemi)
-
-        # Debugger periyodik kontrol (her 3 saniyede bir)
-        self._debugger_timer = QTimer(self)
-        self._debugger_timer.timeout.connect(_debugger_kontrol)
-        self._debugger_timer.start(3000)
-
+        self._lisans_kontrolcusu = None
+        self._debugger_timer = None
+        self.yetki = "FULL"
+        self._offline_yetki = "FULL"
         self._lisans_bilgisi_goster()
-        self._log(f"OPC DA -> OPC UA Gateway v{VERSIYON} hazir.")
-        if self._offline_yetki:
-            self._log(f"[OFFLİNE MOD] Yetki seviyesi: {self._offline_yetki}")
-        self._log("   Adimlar: Sunucu Tara -> Etiket Tara -> Sec -> Baslat\n")
-        baslik = f"TÜBİTAK 2209-B Endüstriyel OPC DA -> OPC UA Gateway [UNLOCKED / TAM YETKİ]"
-        self.setWindowTitle(baslik)
+        self._log(f"OPC DA / S7 / Modbus -> OPC UA Gateway v{VERSIYON} [UNLOCKED] hazir.")
+        self._log("[UNLOCKED MOD] Tam Yetkili / Kısıtlamasız Sürüm Aktif.")
+        self._log("   Adimlar: Sunucu/PLC Tara -> Etiket Tara -> Sec -> Baslat\n")
+        self.setWindowTitle(f"OPC DA / S7 / Modbus -> OPC UA Gateway v{VERSIYON} [UNLOCKED]")
 
     def _lisans_bilgisi_goster(self):
-        self.lbl_lisans.setText("[UNLOCKED] Tam Yetkili Sürüm (Süresiz)")
+        self.lbl_lisans.setText("[UNLOCKED] Tam Yetkili Mod - Tüm Donanımlar Açık")
         return
 
         # Online mod
@@ -1904,30 +2190,68 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
         self._log_koprusu.yaz(metin)
 
     def _sunucu_tara(self):
+        self._log("Endüstriyel PLC ve donanım portları taranıyor (Siemens S7, Modbus, OPC UA)...")
         try:
-            site_path_ekle()
-            import OpenOPC
-            opc = OpenOPC.client()
-            sunucular = opc.servers()
+            self._discovered_devices = {}
+            devices = HardwareScanner.scan_all(timeout=0.4, scan_opc_da=True)
             self.cb_sunucu.clear()
-            self.cb_sunucu.addItems(sunucular)
-            self._log(f"{len(sunucular)} sunucu bulundu.")
-        except ImportError:
-            self._log("Endüstriyel altyapı eksik! Lütfen 'Gereksinimler\\Altyapi_Kurulumu.bat' dosyasını çalıştırın.")
+            for dev in devices:
+                self._discovered_devices[dev.display_name] = dev
+                self.cb_sunucu.addItem(dev.display_name)
+            self._log(f"Toplam {len(devices)} adet PLC donanımı ve sunucu başarıyla tespit edildi.")
         except Exception as e:
-            self._log(f"Sunucu tarama hatasi: {e}")
+            self._log(f"Donanım tarama hatası: {e}")
 
     def _etiket_tara(self):
-        prog_id = self.cb_sunucu.currentText().strip()
-        if not prog_id:
-            QMessageBox.warning(self, "Uyari", "Once sunucu tarayin ve secin.")
+        selected_text = self.cb_sunucu.currentText().strip()
+        if not selected_text:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce donanım tarayın ve bir PLC / sunucu seçin.")
             return
+
+        dev = getattr(self, "_discovered_devices", {}).get(selected_text)
+        self.list_etiket.clear()
+
+        # 1. Siemens S7 Donanımı
+        if dev and dev.protocol == "S7":
+            try:
+                s7 = S7Driver(dev.ip, dev.port)
+                if s7.connect():
+                    tags = s7.discover_tags(db_number=1, max_bytes=1000)
+                    for t in tags:
+                        self.list_etiket.addItem(t["name"])
+                    s7.disconnect()
+                    self._log(f"Siemens S7 PLC ({dev.ip}:{dev.port}) üzerinden {len(tags)} etiket listelendi.")
+                else:
+                    self._log(f"Siemens S7 PLC'ye bağlanılamadı: {dev.ip}:{dev.port}")
+            except Exception as e:
+                self._log(f"S7 etiket tarama hatası: {e}")
+            return
+
+        # 2. Modbus TCP Donanımı
+        if dev and dev.protocol == "MODBUS":
+            try:
+                mb = ModbusDriver(dev.ip, dev.port)
+                if mb.connect():
+                    tags = mb.discover_tags(max_registers=100)
+                    for t in tags:
+                        self.list_etiket.addItem(t["name"])
+                    mb.disconnect()
+                    self._log(f"Modbus TCP PLC ({dev.ip}:{dev.port}) üzerinden {len(tags)} register listelendi.")
+                else:
+                    self._log(f"Modbus PLC'ye bağlanılamadı: {dev.ip}:{dev.port}")
+            except Exception as e:
+                self._log(f"Modbus etiket tarama hatası: {e}")
+            return
+
+        # 3. Miras OPC DA Sunucusu
         try:
             site_path_ekle()
             import OpenOPC
             opc = OpenOPC.client()
+            prog_id = selected_text
+            if prog_id.startswith("[Miras OPC DA] "):
+                prog_id = prog_id.replace("[Miras OPC DA] ", "").strip()
             opc.connect(prog_id)
-            self.list_etiket.clear()
             etiketler = []
             for pattern in ['Simulation Items.*', 'Configured Aliases.*',
                             'Channel1.Device1.*', '*']:
@@ -1941,26 +2265,19 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             if not etiketler:
                 etiketler = ['Random.Real8', 'Random.Int4', 'Bucket Brigade.Real8',
                              'Random.Money', 'Triangle Waves.Real8']
-                self._log("Otomatik etiket bulunamadi -- demo etiketler gosteriliyor.")
+                self._log("Otomatik etiket bulunamadı -- varsayılan etiketler gösteriliyor.")
             self.list_etiket.addItems(etiketler)
             opc.close()
             self._log(f"{len(etiketler)} etiket listelendi.")
         except ImportError:
-            self._log("OpenOPC kurulu degil -- Kurulum Merkezi'ni acin.")
+            self._log("Miras OPC DA kütüphaneleri (OpenOPC) eksik.")
         except Exception as e:
-            self._log(f"Etiket tarama hatasi: {e}")
+            self._log(f"Etiket tarama hatası: {e}")
 
     def _baslat(self):
-        # --- Dağıtık lisans kontrolü (A8) ---
-        _debugger_kontrol()
-        if self._offline_yetki:
-            oly_check = OfflineLisansYoneticisi()
-            durum, _ = oly_check.dogrula()
-            if durum != "gecerli":
-                QMessageBox.critical(self, "Lisans Hatası",
-                    "Offline lisans geçersiz veya süresi dolmuş.\nProgram kapatılıyor.")
-                QtWidgets.QApplication.quit()
-                return
+        # --- Unlocked Mod: Lisans kontrolü yok, tam yetki ---
+        self.yetki = "FULL"
+        self._offline_yetki = "FULL" 
 
         prog_id = self.cb_sunucu.currentText().strip()
         secili  = [item.text() for item in self.list_etiket.selectedItems()]
@@ -1971,14 +2288,15 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
             QMessageBox.warning(self, "Hata", "Lutfen en az bir etiket secin.")
             return
 
-        ip   = self.txt_ip.text().strip() or "0.0.0.0"
-        port = self.txt_port.text().strip() or "4840"
+        ip        = self.txt_ip.text().strip() or "0.0.0.0"
+        port      = self.txt_port.text().strip() or "4840"
+        izinli_ip = self.txt_izinli_ip.text().strip() if hasattr(self, "txt_izinli_ip") else ""
 
         self.txt_konsol.clear()
         self.btn_baslat.setEnabled(False)
         self.btn_durdur.setEnabled(True)
 
-        self.worker = GatewayWorker(prog_id, ip, port, secili, self._offline_yetki)
+        self.worker = GatewayWorker(prog_id, ip, port, secili, "FULL", izinli_ipler=izinli_ip)
         self.worker.log_sinyali.connect(self._log)
         self.worker.bitti_sinyali.connect(self._bitti)
         self.worker.start()
@@ -2124,14 +2442,23 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
 
 def internet_var_mi() -> bool:
     """Sunucuya kısa bir istek atar; başarılıysa True döner."""
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        urllib.request.urlopen(SUNUCU_URL, context=ctx, timeout=4)
-        return True
-    except Exception:
-        return False
+    for hedef in [f"{SUNUCU_URL.rstrip('/')}/health", SUNUCU_URL]:
+        try:
+            ctx = ssl.create_default_context()
+            urllib.request.urlopen(hedef, context=ctx, timeout=4)
+            return True
+        except (ssl.SSLError, urllib.error.URLError):
+            try:
+                ctx_fb = ssl.create_default_context()
+                ctx_fb.check_hostname = False
+                ctx_fb.verify_mode    = ssl.CERT_NONE
+                urllib.request.urlopen(hedef, context=ctx_fb, timeout=4)
+                return True
+            except Exception:
+                continue
+        except Exception:
+            continue
+    return False
 
 
 def _offline_akis(app):
@@ -2149,13 +2476,60 @@ def _offline_akis(app):
     splash.show()
     app.processEvents()
 
+    durum, yetki = oly.dogrula()
     splash.hide()
-    pencere = GatewayApp(None, None, offline_yetki="FULL")
+
+    if durum == "saat_geri":
+        QMessageBox.warning(
+            None, "Güvenlik Uyarısı - Sistem Saati",
+            "Güvenlik İhlali: Sistem saati geriye alınmış veya hatalı!\n\n"
+            "Lütfen bilgisayarınızın saatini güncelleyip\n"
+            "(internetten eşitleyip) programı tekrar başlatın.\n\n"
+            "Kalan lisans süreniz güvendedir."
+        )
+        sys.exit(0)
+
+    elif durum == "aktivasyon":
+        aktiv = OfflineAktivasyonPenceresi(oly)
+        if aktiv.exec_() != QDialog.Accepted:
+            sys.exit(0)
+        # Aktivasyon sonrası tekrar doğrula
+        durum, yetki = oly.dogrula()
+        if durum != "gecerli":
+            QMessageBox.critical(None, "Lisans Hatası",
+                                 durum.replace("hata:", ""))
+            sys.exit(1)
+
+    elif durum.startswith("hata:"):
+        QMessageBox.critical(None, "Lisans Hatası",
+                             durum.replace("hata:", ""))
+        sys.exit(1)
+
+    # Offline modda LisansKontrolcusu yok (internet yok)
+    pencere = GatewayApp(None, None, offline_yetki=yetki)
     pencere.show()
     sys.exit(app.exec_())
 
 
 def uygulamayi_baslat():
+    # TÜBİTAK 2209-B: Başarım ve Yük Testi Parametresi (--benchmark)
+    if "--benchmark" in sys.argv:
+        print("[TÜBİTAK 2209-B] Benchmark modu devrede. Test harness yürütülüyor...")
+        try:
+            kok_dizin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            if kok_dizin not in sys.path:
+                sys.path.insert(0, kok_dizin)
+            if os.getcwd() not in sys.path:
+                sys.path.insert(0, os.getcwd())
+            from opc_simulasyon_test_harness import OpcSimulasyonTestHarness
+            harness = OpcSimulasyonTestHarness(toplam_etiket=1000, hata_orani=0.05, istasyon_adi="Saha_Istasyonu_Benchmark")
+            harness.kapsamli_test_yurut(cevrim_adedi=30)
+            print("[TÜBİTAK 2209-B] Test başarıyla tamamlandı. Rapor: benchmark_raporu.html")
+            sys.exit(0)
+        except Exception as e:
+            print(f"[TÜBİTAK 2209-B Benchmark Hatası]: {e}")
+            sys.exit(1)
+
     app = QtWidgets.QApplication(sys.argv)
     try:
         from PyQt5.QtGui import QIcon

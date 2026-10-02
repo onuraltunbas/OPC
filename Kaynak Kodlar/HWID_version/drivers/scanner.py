@@ -28,8 +28,8 @@ class DiscoveredDevice:
 
 class HardwareScanner:
     # Standart Endüstriyel Donanım Portları
-    S7_PORTS = [102, 1102]
-    MODBUS_PORTS = [502, 5020, 5021]
+    S7_PORTS = [102, 1102, 2102]
+    MODBUS_PORTS = [502, 5020, 5021, 5022, 5023]
     OPCUA_PORTS = [4840, 4845]
 
     @classmethod
