@@ -28,8 +28,8 @@ class DiscoveredDevice:
 
 class HardwareScanner:
     # Standart Endüstriyel Donanım Portları
-    S7_PORTS = [102, 1102, 2102]
-    MODBUS_PORTS = [502, 5020, 5021, 5022, 5023]
+    S7_PORTS = [102, 1102, 2102, 3102, 4102, 5102, 6102, 7102, 8102, 9102]
+    MODBUS_PORTS = [502, 5020, 5021, 5022, 5023, 5024, 5025, 5026, 5027, 5028, 5029]
     OPCUA_PORTS = [4840, 4845]
 
     @classmethod
@@ -70,6 +70,17 @@ class HardwareScanner:
                 res = future.result()
                 if res:
                     discovered.append(res)
+
+        # Yerel adaptör tekrarlarını tekilleştir (Aynı port hem 127.0.0.1 hem LAN IP'de açılmışsa tekilleştir)
+        unique_devs = []
+        seen_keys = set()
+        discovered.sort(key=lambda d: 0 if d.ip == "127.0.0.1" else 1)
+        for d in discovered:
+            key = (d.protocol, d.port)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_devs.append(d)
+        discovered = unique_devs
 
         # Miras OPC DA Sunucuları (Eğer OpenOPC mevcutsa geriye dönük uyumluluk)
         if scan_opc_da:

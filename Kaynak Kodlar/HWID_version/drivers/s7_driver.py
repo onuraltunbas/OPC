@@ -261,15 +261,55 @@ class S7Driver:
             return bool((byte_val >> bit_offset) & 1)
         return None
 
-    def discover_tags(self, db_number: int = 1, max_bytes: int = 1000) -> List[Dict[str, Any]]:
+    def discover_tags(self, db_number: int = 1, max_bytes: int = 2000) -> List[Dict[str, Any]]:
         """
-        Saha istasyonu için PLC üzerindeki DB alanını tarar ve okunabilir etiket listesi üretir.
+        Saha istasyonu için PLC üzerindeki etiket kataloğunu veya DB alanını tarar.
         """
         tags = []
-        # İlk 1000 baytı dene
-        chunk = self.read_db_bytes(db_number, 0, min(120, max_bytes))
+
+        # 1. Önce DB2 üzerindeki zengin etiket kataloğunu oku (Simülatör & TIA Portal Meta)
+        try:
+            cat_bytes = bytearray()
+            hdr = self.read_db_bytes(2, 0, 1000)
+            if hdr and hdr.startswith(b"CATALOG_V1\n"):
+                cat_bytes.extend(hdr)
+                offset = len(hdr)
+                chunk_size = 2000
+                while b"\x00" not in cat_bytes and offset < 8388608:
+                    nxt = self.read_db_bytes(2, offset, chunk_size)
+                    if not nxt:
+                        break
+                    cat_bytes.extend(nxt)
+                    if b"\x00" in nxt or len(nxt) < chunk_size:
+                        break
+                    offset += len(nxt)
+
+                text = cat_bytes.split(b"\x00")[0].decode("utf-8", errors="ignore")
+                lines = text.strip().split("\n")
+                if len(lines) > 1 and lines[0] == "CATALOG_V1":
+                    for line in lines[1:]:
+                        if not line or "|" not in line:
+                            continue
+                        parts = line.split("|")
+                        tname = parts[0]
+                        s7_addr = parts[1] if len(parts) > 1 else ""
+                        dtype = parts[2] if len(parts) > 2 else "FLOAT"
+                        if s7_addr:
+                            tags.append({
+                                "name": f"{s7_addr} [{tname}]",
+                                "raw_address": s7_addr,
+                                "alias": tname,
+                                "type": dtype,
+                                "address": s7_addr
+                            })
+                    if tags:
+                        return tags
+        except Exception:
+            pass
+
+        # 2. Fallback: Standart fiziksel S7 PLC (Katalog yoksa DB1'i dinamik oku)
+        chunk = self.read_db_bytes(db_number, 0, min(2000, max_bytes))
         if chunk is not None:
-            # Okunabiliyor, sembolik ve standart S7 adres şeması üret
             offset = 0
             tag_idx = 1
             while offset + 4 <= len(chunk):
@@ -284,8 +324,7 @@ class S7Driver:
                 })
                 offset += 4
                 tag_idx += 1
-            
-            # Boolean bitler için
+
             for b in range(8):
                 tags.append({
                     "name": f"DB{db_number}.DBX{offset}.{b}",
@@ -297,7 +336,6 @@ class S7Driver:
                     "bit": b
                 })
         else:
-            # Fallback standart şablon
             for i in range(20):
                 tags.append({
                     "name": f"DB{db_number}.DBD{i * 4}",

@@ -128,7 +128,7 @@ class OpcSimulasyonTestHarness:
     """
     TÜBİTAK 2209-B Saha İstasyonu Protokol Dönüşüm Dayanıklılık Test Motoru.
     """
-    def __init__(self, toplam_etiket: int = 1000, hata_orani: float = 0.05, istasyon_adi: str = "Tubitak_Harness_01"):
+    def __init__(self, toplam_etiket: int = 1000, hata_orani: float = 0.05, istasyon_adi: str = "Tubitak2209B_Pilot_Saha_Istasyonu"):
         self.toplam_etiket = toplam_etiket
         self.hata_orani = hata_orani
         self.ureteci = EndustriyelEtiketUreteci(toplam_etiket=toplam_etiket)

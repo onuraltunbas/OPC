@@ -1463,25 +1463,79 @@ class GatewayWorker(QThread):
         s7 = getattr(self, "_s7_client", None)
         if s7 is not None and s7.is_connected():
             now_iso = datetime.datetime.now().isoformat()
+            
+            # Etiket sayısı 30'dan fazlaysa DB1 blok okuması ile ultra hızlı oku
+            db1_cache = {}
+            if len(etiket_listesi) > 30:
+                try:
+                    db1_offsets = []
+                    for et in etiket_listesi:
+                        clean_addr = et.split()[0]
+                        if clean_addr.startswith("DB1."):
+                            parts = clean_addr.split(".")
+                            var_name = parts[1]
+                            if var_name.startswith(("DBD", "DBW", "DBX")):
+                                try:
+                                    db1_offsets.append(int(var_name.replace("DBD", "").replace("DBW", "").replace("DBX", "")))
+                                except ValueError:
+                                    pass
+                    if db1_offsets:
+                        min_off = min(db1_offsets)
+                        max_off = max(db1_offsets) + 4
+                        chunk_sz = 4000
+                        for blk_start in range(min_off, max_off, chunk_sz):
+                            blk_cnt = min(chunk_sz, max_off - blk_start)
+                            raw = s7.read_db_bytes(1, blk_start, blk_cnt)
+                            if raw:
+                                db1_cache[(blk_start, blk_start + len(raw))] = raw
+                except Exception:
+                    db1_cache = {}
+
             for et in etiket_listesi:
                 val = None
                 try:
-                    parts = et.split(".")
+                    clean_addr = et.split()[0]
+                    parts = clean_addr.split(".")
                     db_num = int(parts[0].replace("DB", ""))
                     var_name = parts[1]
-                    if var_name.startswith("DBD"):
-                        offset = int(var_name.replace("DBD", ""))
-                        val = s7.read_real(db_num, offset)
-                    elif var_name.startswith("DBW"):
-                        offset = int(var_name.replace("DBW", ""))
-                        val = float(s7.read_int(db_num, offset) or 0)
-                    elif var_name.startswith("DBX"):
-                        offset = int(var_name.replace("DBX", ""))
-                        bit = int(parts[2]) if len(parts) > 2 else 0
-                        b_val = s7.read_bool(db_num, offset, bit)
-                        val = 1.0 if b_val else 0.0
-                    else:
-                        val = s7.read_real(db_num, 0)
+
+                    if db_num == 1 and db1_cache and var_name.startswith(("DBD", "DBW", "DBX")):
+                        try:
+                            offset = int(var_name.replace("DBD", "").replace("DBW", "").replace("DBX", ""))
+                            raw_blk = None
+                            blk_base = 0
+                            for (b_s, b_e), blk_data in db1_cache.items():
+                                if b_s <= offset < b_e:
+                                    raw_blk = blk_data
+                                    blk_base = b_s
+                                    break
+                            if raw_blk:
+                                rel_off = offset - blk_base
+                                if var_name.startswith("DBD") and rel_off + 4 <= len(raw_blk):
+                                    val = struct.unpack_from(">f", raw_blk, rel_off)[0]
+                                elif var_name.startswith("DBW") and rel_off + 2 <= len(raw_blk):
+                                    val = float(struct.unpack_from(">h", raw_blk, rel_off)[0])
+                                elif var_name.startswith("DBX") and rel_off < len(raw_blk):
+                                    bit = int(parts[2]) if len(parts) > 2 else 0
+                                    val = 1.0 if bool((raw_blk[rel_off] >> bit) & 1) else 0.0
+                        except Exception:
+                            val = None
+
+                    if val is None:
+                        # Fallback tekil okuma (DB2 veya blok dışı için)
+                        if var_name.startswith("DBD"):
+                            offset = int(var_name.replace("DBD", ""))
+                            val = s7.read_real(db_num, offset)
+                        elif var_name.startswith("DBW"):
+                            offset = int(var_name.replace("DBW", ""))
+                            val = float(s7.read_int(db_num, offset) or 0)
+                        elif var_name.startswith("DBX"):
+                            offset = int(var_name.replace("DBX", ""))
+                            bit = int(parts[2]) if len(parts) > 2 else 0
+                            b_val = s7.read_bool(db_num, offset, bit)
+                            val = 1.0 if b_val else 0.0
+                        else:
+                            val = s7.read_real(db_num, 0)
                 except Exception:
                     val = None
                 sonuclar[et] = (val, "Good" if val is not None else "Bad", now_iso)
@@ -1495,11 +1549,12 @@ class GatewayWorker(QThread):
             for et in etiket_listesi:
                 val = None
                 try:
-                    if et.startswith("HR_"):
-                        reg_addr = int(et.replace("HR_", "")) - 40001
+                    clean_addr = et.split()[0]
+                    if clean_addr.startswith("HR_"):
+                        reg_addr = int(clean_addr.replace("HR_", "")) - 40001
                         val = mb.read_float32(reg_addr)
-                    elif et.startswith("Coil_"):
-                        coil_idx = int(et.replace("Coil_", "")) - 1
+                    elif clean_addr.startswith("Coil_"):
+                        coil_idx = int(clean_addr.replace("Coil_", "")) - 1
                         bits = mb.read_coils(coil_idx, 1)
                         if bits:
                             val = 1.0 if bits[0] else 0.0
@@ -1852,7 +1907,10 @@ class GatewayWorker(QThread):
 
             etiket_haritasi = {}
             for et in self.etiketler:
-                safe = et.replace(".", "_").replace(" ", "_").replace("\\", "_")
+                import re
+                m_alias = re.search(r'\[(.*?)\]', et)
+                var_name = m_alias.group(1) if m_alias else et
+                safe = var_name.replace(".", "_").replace(" ", "_").replace("\\", "_")
                 node = await kok.add_variable(idx, safe, 0.0, ua.VariantType.Double)
                 
                 # --- EKLENEN KISIM: READ YETKİ KONTROLÜ ---
@@ -2217,8 +2275,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
                 s7 = S7Driver(dev.ip, dev.port)
                 if s7.connect():
                     tags = s7.discover_tags(db_number=1, max_bytes=1000)
-                    for t in tags:
-                        self.list_etiket.addItem(t["name"])
+                    self.list_etiket.addItems([t["name"] for t in tags])
                     s7.disconnect()
                     self._log(f"Siemens S7 PLC ({dev.ip}:{dev.port}) üzerinden {len(tags)} etiket listelendi.")
                 else:
@@ -2233,8 +2290,7 @@ class GatewayApp(QtWidgets.QMainWindow, Ui_MainWindow):
                 mb = ModbusDriver(dev.ip, dev.port)
                 if mb.connect():
                     tags = mb.discover_tags(max_registers=100)
-                    for t in tags:
-                        self.list_etiket.addItem(t["name"])
+                    self.list_etiket.addItems([t["name"] for t in tags])
                     mb.disconnect()
                     self._log(f"Modbus TCP PLC ({dev.ip}:{dev.port}) üzerinden {len(tags)} register listelendi.")
                 else:

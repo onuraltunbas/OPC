@@ -211,10 +211,57 @@ class ModbusDriver:
         Modbus PLC üzerinde aktif register alanını tarar ve okunabilir etiket listesi üretir.
         """
         tags = []
-        # İlk 100 register'ı kontrol et
+
+        # 1. Önce Register 8000 üzerindeki zengin etiket kataloğunu kontrol et (Simülatör & Saha Meta)
+        try:
+            regs = self.read_holding_registers(8000, 100)
+            if regs:
+                raw_bytes = bytearray()
+                for w in regs:
+                    raw_bytes.append((w >> 8) & 0xFF)
+                    raw_bytes.append(w & 0xFF)
+                if raw_bytes.startswith(b"CATALOG_V1\n"):
+                    # Gerekirse daha fazla register oku
+                    read_offset = 8100
+                    while b"\x00" not in raw_bytes and read_offset < 35000:
+                        nxt_regs = self.read_holding_registers(read_offset, 100)
+                        if not nxt_regs:
+                            break
+                        for w in nxt_regs:
+                            raw_bytes.append((w >> 8) & 0xFF)
+                            raw_bytes.append(w & 0xFF)
+                        if b"\x00" in raw_bytes:
+                            break
+                        read_offset += 100
+
+                    text = raw_bytes.split(b"\x00")[0].decode("utf-8", errors="ignore")
+                    lines = text.strip().split("\n")
+                    if len(lines) > 1 and lines[0] == "CATALOG_V1":
+                        for line in lines[1:]:
+                            if not line or "|" not in line:
+                                continue
+                            parts = line.split("|")
+                            tname = parts[0]
+                            m_type = parts[3] if len(parts) > 3 else "HR"
+                            m_addr = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+                            if m_type == "COIL":
+                                addr_str = f"Coil_{m_addr + 1}"
+                            else:
+                                addr_str = f"HR_{40001 + m_addr}"
+                            tags.append({
+                                "name": f"{addr_str} [{tname}]",
+                                "raw_address": addr_str,
+                                "alias": tname,
+                                "type": parts[2] if len(parts) > 2 else "FLOAT"
+                            })
+                        if tags:
+                            return tags
+        except Exception:
+            pass
+
+        # 2. Fallback: Standart Modbus Cihazı
         regs = self.read_holding_registers(0, min(100, max_registers))
         if regs is not None:
-            # Analog Float ve Tamsayı etiketleri ekle
             for i in range(0, len(regs) - 1, 2):
                 tag_no = (i // 2) + 1
                 tags.append({
@@ -225,20 +272,6 @@ class ModbusDriver:
                     "reg": i,
                     "count": 2
                 })
-        else:
-            # Fallback şablon
-            for i in range(0, 20, 2):
-                tag_no = (i // 2) + 1
-                tags.append({
-                    "name": f"HR_{40001 + i}",
-                    "alias": f"Modbus_Deger_{tag_no}",
-                    "address": f"40001+{i}",
-                    "type": "FLOAT",
-                    "reg": i,
-                    "count": 2
-                })
-
-        # Coils (Dijital Bitler) kontrol et
         coils = self.read_coils(0, 16)
         if coils is not None:
             for b in range(len(coils)):
@@ -250,7 +283,6 @@ class ModbusDriver:
                     "reg": b,
                     "count": 1
                 })
-
         return tags
 
     @staticmethod

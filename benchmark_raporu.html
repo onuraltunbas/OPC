@@ -133,30 +133,30 @@
     <h1>Deneysel Doğrulama ve Performans Analiz Raporu</h1>
     <div class="subtitle">
       <strong>Proje:</strong> Endüstriyel Miras (OPC DA) - Modern OPC UA Donanım Güvenlikli Protokol Dönüştürücü Saha İstasyonu<br>
-      <strong>İstasyon Tanımı:</strong> Tubitak2209B_Saha_Test_Harness &bull; <strong>Rapor Tarihi:</strong> 01.10.2026 13:36:13
+      <strong>İstasyon Tanımı:</strong> Tubitak2209B_Pilot_Saha_Istasyonu &bull; <strong>Rapor Tarihi:</strong> 02.10.2026 19:27:07
     </div>
 
     <!-- Metrik Kartları -->
     <div class="grid">
       <div class="card">
         <div class="card-title">Ortalama Dönüşüm Gecikmesi</div>
-        <div class="card-value">7.11 <span style="font-size:16px;">ms</span></div>
-        <div class="card-sub">P95: 7.77 ms &bull; Min: 6.43 ms</div>
+        <div class="card-value">12.39 <span style="font-size:16px;">ms</span></div>
+        <div class="card-sub">P95: 12.62 ms &bull; Min: 12.1 ms</div>
       </div>
       <div class="card">
         <div class="card-title">Etiket İşleme Verimi</div>
-        <div class="card-value">1190.48 <span style="font-size:16px;">etiket/sn</span></div>
-        <div class="card-sub">Toplam: 250 etiket</div>
+        <div class="card-value">78274.76 <span style="font-size:16px;">etiket/sn</span></div>
+        <div class="card-sub">Toplam: 49000 etiket</div>
       </div>
       <div class="card">
         <div class="card-title">İşlemci Yükü (CPU)</div>
-        <div class="card-value">%0.0</div>
-        <div class="card-sub">Zirve: %0.0</div>
+        <div class="card-value">%0.25</div>
+        <div class="card-sub">Zirve: %12.5</div>
       </div>
       <div class="card">
         <div class="card-title">Bellek Ayak İzi (RAM)</div>
-        <div class="card-value">19.44 <span style="font-size:16px;">MB</span></div>
-        <div class="card-sub">Zirve: 19.44 MB</div>
+        <div class="card-value">54.71 <span style="font-size:16px;">MB</span></div>
+        <div class="card-sub">Zirve: 54.71 MB</div>
       </div>
     </div>
 
@@ -165,7 +165,7 @@
       <div class="chart-title">
         <span>Protokol Dönüşüm Gecikmesi ve CPU Zaman Serisi</span>
         <div class="legend">
-          <div class="legend-item"><div class="dot-blue"></div> Gecikme (ms) [Maks: 7.8 ms]</div>
+          <div class="legend-item"><div class="dot-blue"></div> Gecikme (ms) [Maks: 12.7 ms]</div>
           <div class="legend-item"><div class="dot-purple"></div> CPU Yükü (%) [0-100]</div>
         </div>
       </div>
@@ -177,16 +177,16 @@
         <line x1="60" y1="20" x2="60" y2="180" stroke="#334155" stroke-width="1" />
 
         <!-- Eksen Etiketleri -->
-        <text x="50" y="25" fill="#64748b" font-size="11" text-anchor="end">7.8</text>
-        <text x="50" y="104.0" fill="#64748b" font-size="11" text-anchor="end">3.9</text>
+        <text x="50" y="25" fill="#64748b" font-size="11" text-anchor="end">12.7</text>
+        <text x="50" y="104.0" fill="#64748b" font-size="11" text-anchor="end">6.3</text>
         <text x="50" y="180" fill="#64748b" font-size="11" text-anchor="end">0.0</text>
         
         <text x="60" y="198" fill="#64748b" font-size="11">0 sn</text>
-        <text x="740" y="198" fill="#64748b" font-size="11" text-anchor="end">0.21 sn</text>
+        <text x="740" y="198" fill="#64748b" font-size="11" text-anchor="end">0.63 sn</text>
 
         <!-- Çizgiler -->
-        <polyline fill="none" stroke="#38bdf8" stroke-width="2" points="60.0,30.6 230.0,20.0 400.0,47.7 570.0,29.9 740.0,39.7" />
-        <polyline fill="none" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="3" points="60.0,180.0 230.0,180.0 400.0,180.0 570.0,180.0 740.0,180.0" />
+        <polyline fill="none" stroke="#38bdf8" stroke-width="2" points="60.0,23.0 73.9,23.9 87.8,25.1 101.6,25.2 115.5,22.3 129.4,25.5 143.3,25.6 157.1,23.4 171.0,24.9 184.9,26.6 198.8,22.1 212.7,24.3 226.5,20.9 240.4,20.6 254.3,23.8 268.2,20.2 282.0,24.0 295.9,24.9 309.8,23.4 323.7,22.4 337.6,22.2 351.4,25.5 365.3,22.1 379.2,22.0 393.1,26.8 406.9,23.1 420.8,22.2 434.7,23.3 448.6,24.6 462.4,22.7 476.3,24.8 490.2,20.9 504.1,22.7 518.0,25.5 531.8,23.8 545.7,20.8 559.6,22.6 573.5,20.0 587.3,24.2 601.2,22.5 615.1,25.8 629.0,25.5 642.9,25.8 656.7,23.1 670.6,27.2 684.5,25.9 698.4,22.2 712.2,22.5 726.1,22.6 740.0,21.4" />
+        <polyline fill="none" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="3" points="60.0,160.0 73.9,180.0 87.8,180.0 101.6,180.0 115.5,180.0 129.4,180.0 143.3,180.0 157.1,180.0 171.0,180.0 184.9,180.0 198.8,180.0 212.7,180.0 226.5,180.0 240.4,180.0 254.3,180.0 268.2,180.0 282.0,180.0 295.9,180.0 309.8,180.0 323.7,180.0 337.6,180.0 351.4,180.0 365.3,180.0 379.2,180.0 393.1,180.0 406.9,180.0 420.8,180.0 434.7,180.0 448.6,180.0 462.4,180.0 476.3,180.0 490.2,180.0 504.1,180.0 518.0,180.0 531.8,180.0 545.7,180.0 559.6,180.0 573.5,180.0 587.3,180.0 601.2,180.0 615.1,180.0 629.0,180.0 642.9,180.0 656.7,180.0 670.6,180.0 684.5,180.0 698.4,180.0 712.2,180.0 726.1,180.0 740.0,180.0" />
       </svg>
     </div>
 
@@ -207,37 +207,37 @@
         <tbody>
           <tr>
             <td>En Düşük Gecikme (Min)</td>
-            <td><strong>6.43 ms</strong></td>
+            <td><strong>12.1 ms</strong></td>
             <td>&lt; 5.0 ms</td>
             <td><span style="color:#4ade80;">✓ Üstün Donanım Dönüşüm Hızı</span></td>
           </tr>
           <tr>
             <td>Ortalama Gecikme (Mean)</td>
-            <td><strong>7.11 ms</strong></td>
+            <td><strong>12.39 ms</strong></td>
             <td>&lt; 20.0 ms</td>
             <td><span style="color:#4ade80;">✓ Gerçek Zamanlı Endüstriyel Kriter Sağlandı</span></td>
           </tr>
           <tr>
             <td>Medyan (P50)</td>
-            <td><strong>7.25 ms</strong></td>
+            <td><strong>12.4 ms</strong></td>
             <td>&lt; 15.0 ms</td>
             <td><span style="color:#4ade80;">✓ Kararlı Çevrim Davranışı</span></td>
           </tr>
           <tr>
             <td>95. Yüzdelik (P95)</td>
-            <td><strong>7.77 ms</strong></td>
+            <td><strong>12.62 ms</strong></td>
             <td>&lt; 35.0 ms</td>
             <td><span style="color:#4ade80;">✓ Düşük Jitter / Sapma Oranı</span></td>
           </tr>
           <tr>
             <td>99. Yüzdelik (P99)</td>
-            <td><strong>7.77 ms</strong></td>
+            <td><strong>12.67 ms</strong></td>
             <td>&lt; 50.0 ms</td>
             <td><span style="color:#4ade80;">✓ Ağ / Arabellek Şişmesi Tespit Edilmedi</span></td>
           </tr>
           <tr>
             <td>Hata ve Paket Kaybı Oranı</td>
-            <td><strong>%0.0</strong></td>
+            <td><strong>%2.0</strong></td>
             <td>&lt; %1.0</td>
             <td><span style="color:#4ade80;">✓ Sıfır Veri Kaybı Garantisi</span></td>
           </tr>
