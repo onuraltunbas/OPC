@@ -1,6 +1,6 @@
 [Setup]
 AppName=Nautilus OPC Suite Pro
-AppVersion=5.0
+AppVersion=6.0
 AppPublisher=Nautilus Technology
 AppCopyright=Copyright (C) 2026 Nautilus Technology
 DefaultDirName={autopf}\Nautilus Technology\OPC Gateway

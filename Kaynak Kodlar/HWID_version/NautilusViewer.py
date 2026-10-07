@@ -33,10 +33,10 @@ from asyncua import Client
 # TÜBİTAK 2209-B İSTEMCİ YAPILANDIRMASI
 # =====================================================================
 SUNUCU_URL       = os.getenv("OPC_SUNUCU_URL", "https://nautilustechnology.com.tr")
-UYGULAMA_SIFRESI = "admin1234"
+UYGULAMA_SIFRESI = "jhAuM0RPQo_oipAFvqllTvXPPU2Z3CHig96Xmlmn3CYKMNKz5ho2SauhRnNQY"
 LISANS_DOSYASI   = os.path.join(os.getenv("APPDATA", ""), "OPCGateway", "viewer_lisans.json")
 CHECKIN_ARALIK   = 7
-VERSIYON         = "5.0"
+VERSIYON         = "6.0"
 URUN_TIPI        = "viewer"  # TÜBİTAK 2209-B Saha İstasyonu Yetkilendirme İzolasyonu
 
 # =====================================================================

@@ -15,7 +15,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, QObject, Qt, QTimer
 from PyQt5.QtWidgets import QMessageBox
 from asyncua import Client
 
-VERSIYON = "5.0-UNLOCKED"
+VERSIYON = "6.0-UNLOCKED"
 PROGRAM_BASLIK = "TÜBİTAK 2209-B Endüstriyel OPC UA Viewer [UNLOCKED]"
 
 # =====================================================================
